@@ -77,6 +77,7 @@ public final class Main {
         Finding.Severity failOn = Finding.Severity.HIGH;
         ChangeSeverity failOnChange = ChangeSeverity.BREAKING;
         boolean acceptChanges = false;
+        java.time.Duration timeoutOverride = null;
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -85,6 +86,16 @@ public final class Main {
                 case "--out" -> outFile = Path.of(require(args, ++i, err));
                 case "--sarif" -> sarifFile = Path.of(require(args, ++i, err));
                 case "--accept-changes" -> acceptChanges = true;
+                case "--timeout" -> {
+                    String value = require(args, ++i, err);
+                    try {
+                        timeoutOverride = java.time.Duration.ofSeconds(
+                                Math.max(1, Long.parseLong(value.strip())));
+                    } catch (RuntimeException e) {
+                        err.println("mcp-sentinel: --timeout 需要秒数，收到 '" + value + "'");
+                        return EXIT_USAGE;
+                    }
+                }
                 case "--fail-on" -> {
                     String value = require(args, ++i, err).toUpperCase(Locale.ROOT);
                     try {
@@ -125,6 +136,9 @@ public final class Main {
             return EXIT_USAGE;
         }
 
+        if (timeoutOverride != null) {
+            target = target.withTimeout(timeoutOverride);
+        }
         McpConnector.Result connection = McpConnector.connect(target);
         if (!connection.ok()) {
             err.println("mcp-sentinel: 连接服务器失败: " + connection.error());
@@ -287,6 +301,7 @@ public final class Main {
                   --fail-on-change LEVEL   工具面变更在哪个级别阻断
                                            （INFO / BREAKING / DANGEROUS，默认 BREAKING）
                   --accept-changes         批准本次变更并写回基线（有意的迭代走这一步）
+                  --timeout N              连接超时秒数（默认取配置里的 timeoutSeconds，否则 20）
 
                 配置（与主流 MCP 客户端格式一致）:
                   { "server": "my-server", "command": "java", "args": ["-jar", "server.jar"] }

@@ -6,7 +6,7 @@
 
     <groupId>io.github.xiaoxusop</groupId>
     <artifactId>mcp-sentinel</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
     <packaging>jar</packaging>
 
     <name>mcp-sentinel</name>
@@ -48,6 +48,17 @@
             <artifactId>mcp-json-jackson2</artifactId>
             <version>${mcp.sdk.version}</version>
         </dependency>
+        <!--
+          MCP SDK 依赖 slf4j-api 但不带实现，于是每次调用都会打三行
+          "No SLF4J providers were found" 警告。本工具不需要日志，挂个空实现把它消掉。
+        -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-nop</artifactId>
+            <version>2.0.16</version>
+            <scope>runtime</scope>
+        </dependency>
+
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>

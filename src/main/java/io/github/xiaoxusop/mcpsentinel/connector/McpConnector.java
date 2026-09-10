@@ -31,14 +31,18 @@ public final class McpConnector {
     }
 
     public static Result connect(ServerTarget target) {
-        ServerParameters parameters = ServerParameters.builder(target.command())
-                .args(target.args().toArray(new String[0]))
-                .build();
+        ServerParameters.Builder parameters = ServerParameters.builder(target.command())
+                .args(target.args().toArray(new String[0]));
+        // env 是主流客户端配置的标准字段，很多 server 靠它拿 API key；
+        // 忽略它会让"可直接从现有配置复制"这个卖点在真实配置上直接失败
+        if (!target.env().isEmpty()) {
+            parameters.env(target.env());
+        }
 
         try (McpSyncClient client = McpClient
-                .sync(new StdioClientTransport(parameters, McpJsonDefaults.getMapper()))
-                .clientInfo(new McpSchema.Implementation("mcp-sentinel", "0.1.0"))
-                .requestTimeout(REQUEST_TIMEOUT)
+                .sync(new StdioClientTransport(parameters.build(), McpJsonDefaults.getMapper()))
+                .clientInfo(new McpSchema.Implementation("mcp-sentinel", "0.2.0"))
+                .requestTimeout(target.timeout() == null ? REQUEST_TIMEOUT : target.timeout())
                 .build()) {
 
             McpSchema.InitializeResult handshake = client.initialize();

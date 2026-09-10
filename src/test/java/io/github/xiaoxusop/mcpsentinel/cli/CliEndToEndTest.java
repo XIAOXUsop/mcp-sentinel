@@ -123,6 +123,29 @@ class CliEndToEndTest {
         assertEquals(4, again.code(), "批准了上一次变更不该连带批准这一次：" + again.out());
     }
 
+    /**
+     * {@code scan --out} 必须真的写文件。
+     *
+     * <p>旧版把 {@code --out} 解析出来却在 scan 里从不使用——不报错、不警告、不产生文件。
+     * 静默忽略一个用户明确给出的输出参数，比报错更糟：脚本会以为报告已经落盘。
+     */
+    @Test
+    @Timeout(value = 180, unit = TimeUnit.SECONDS)
+    void scanWritesTheReportToTheRequestedFile(@TempDir Path dir) throws Exception {
+        Path config = dir.resolve("mcp.json");
+        Path spec = dir.resolve("server.json");
+        Path report = dir.resolve("report.txt");
+
+        writeSingleToolSpec(spec, "Looks up a record.");
+        writeConfig(config, spec);
+
+        Invocation result = invoke("scan", "--config", config.toString(), "--out", report.toString());
+
+        assertEquals(0, result.code(), result.out() + result.err());
+        assertTrue(Files.isRegularFile(report), "--out 指定的文件没有被创建");
+        assertTrue(Files.readString(report).contains("MCP 工具面扫描"), Files.readString(report));
+    }
+
     /** 两个同名工具；第二个的 schema 由参数决定 */
     private static void writeSpec(Path spec, String secondSchema) throws Exception {
         ObjectNode root = MAPPER.createObjectNode();

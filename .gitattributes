@@ -1,0 +1,16 @@
+# 换行符统一为 LF。
+#
+# 这个项目对换行符格外敏感：它读的是日志与配置，而 CRLF 与 LF 在正则、指纹、
+# 字节比较上都是两种东西。仓库自己的文件就别再制造同类问题——
+# 在 Windows 上 checkout 得到 CRLF、在 Linux 上得到 LF，会让同一份源码在不同机器上行为不同。
+* text=auto eol=lf
+
+# 基线要进版本库、要出现在评审 diff 里，尤其需要稳定
+*.json text eol=lf
+
+# 二进制文件不做任何转换
+*.jar binary
+*.zip binary
+*.png binary
+*.jpg binary
+*.gif binary
