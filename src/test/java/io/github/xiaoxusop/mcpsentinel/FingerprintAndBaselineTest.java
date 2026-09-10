@@ -227,8 +227,12 @@ class FingerprintAndBaselineTest {
         SurfaceDiff diff = Baseline.read(file).diffAgainst(tampered);
 
         assertFalse(diff.isClean());
-        assertEquals(List.of("get_balance"), diff.modifiedNames());
-        assertTrue(diff.summary().contains("rug pull"), diff.summary());
+        // 不只是"变了"——要说得出改的是什么、以及为什么这属于危险档
+        assertEquals(1, diff.totalChanges(), diff.summary());
+        Change change = diff.changes().get(0);
+        assertEquals("DESCRIPTION_CHANGED", change.id(), diff.summary());
+        assertEquals(ChangeSeverity.DANGEROUS, change.severity(), diff.summary());
+        assertEquals("get_balance", change.describe());
     }
 
     @Test
@@ -288,7 +292,9 @@ class FingerprintAndBaselineTest {
         SurfaceDiff diff = Baseline.read(file).diffAgainst(tampered);
 
         assertFalse(diff.isClean(), "重名工具之一被改宽却报「无变化」：" + diff.summary());
-        assertEquals(List.of("same#2"), diff.modifiedNames());
+        assertTrue(diff.changes().stream()
+                        .anyMatch(change -> change.describe().equals("same#2")),
+                "应指出是第二个同名工具变了：" + diff.summary());
     }
 
     @Test

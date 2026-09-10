@@ -161,38 +161,52 @@ public record Baseline(int version,
 
     // ---------- 对比 ----------
 
-    /** 与当前工具面比较，得出差异。重名工具按**出现序号**逐个配对，不再互相覆盖 */
+    /**
+     * 与当前工具面比较，得出**带类型的变更集**。
+     *
+     * <p>重名工具按**出现序号**逐个配对——旧版以工具名为键，其中一个被改写会被另一个覆盖，
+     * 于是改动被完全静默地吞掉。已批准的变更（指纹命中 {@code acceptedChanges}）
+     * 会被标出来但不阻断 CI。
+     */
     public SurfaceDiff diffAgainst(ToolSurface current) {
         Map<String, List<ToolEntry>> before = group(tools, entry -> entry.tool().name());
         Map<String, List<ToolDefinition>> after = group(current.sorted(), ToolDefinition::name);
 
-        List<String> added = new ArrayList<>();
-        List<String> removed = new ArrayList<>();
-        List<SurfaceDiff.ModifiedTool> changed = new ArrayList<>();
-
+        List<Change> changes = new ArrayList<>();
         for (Map.Entry<String, List<ToolDefinition>> entry : after.entrySet()) {
             List<ToolEntry> previous = before.get(entry.getKey());
             for (int i = 0; i < entry.getValue().size(); i++) {
+                ToolDefinition now = entry.getValue().get(i);
                 if (previous == null || i >= previous.size()) {
-                    added.add(entry.getKey());
+                    // 新增的工具是攻击面——rug pull 最常见的形态就是"多出来一个工具"
+                    changes.add(new Change("TOOL_ADDED", entry.getKey(), i, ChangeSeverity.DANGEROUS,
+                            "新增工具", ToolFingerprint.of(now).substring(0, 16)));
                     continue;
                 }
-                ToolDefinition now = entry.getValue().get(i);
-                String fingerprint = ToolFingerprint.of(now);
-                if (!fingerprint.equals(previous.get(i).fingerprint())) {
-                    changed.add(new SurfaceDiff.ModifiedTool(entry.getKey(), i,
-                            previous.get(i).tool(), now));
+                ToolDefinition was = previous.get(i).tool();
+                if (!ToolFingerprint.of(now).equals(previous.get(i).fingerprint())) {
+                    changes.addAll(SchemaDiff.between(was, now, i));
                 }
             }
         }
         for (Map.Entry<String, List<ToolEntry>> entry : before.entrySet()) {
-            List<ToolDefinition> current2 = after.get(entry.getKey());
-            int currentSize = current2 == null ? 0 : current2.size();
+            List<ToolDefinition> currentTools = after.get(entry.getKey());
+            int currentSize = currentTools == null ? 0 : currentTools.size();
             for (int i = currentSize; i < entry.getValue().size(); i++) {
-                removed.add(entry.getKey());
+                changes.add(new Change("TOOL_REMOVED", entry.getKey(), i, ChangeSeverity.BREAKING,
+                        "工具被移除", entry.getValue().get(i).fingerprint().substring(0, 16)));
             }
         }
-        return new SurfaceDiff(added, removed, changed);
+        return new SurfaceDiff(changes, approvedDigests());
+    }
+
+    /** 已批准的变更指纹集合 */
+    public java.util.Set<String> approvedDigests() {
+        java.util.Set<String> digests = new java.util.LinkedHashSet<>();
+        for (AcceptedChange change : acceptedChanges) {
+            digests.add(change.digest());
+        }
+        return digests;
     }
 
     private static <T> Map<String, List<T>> group(List<T> items, Function<T, String> nameOf) {
