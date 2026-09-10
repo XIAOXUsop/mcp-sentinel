@@ -2,6 +2,7 @@ package io.github.xiaoxusop.mcpsentinel.cli;
 
 import io.github.xiaoxusop.mcpsentinel.Baseline;
 import io.github.xiaoxusop.mcpsentinel.Finding;
+import io.github.xiaoxusop.mcpsentinel.SarifWriter;
 import io.github.xiaoxusop.mcpsentinel.ScanReport;
 import io.github.xiaoxusop.mcpsentinel.SurfaceDiff;
 import io.github.xiaoxusop.mcpsentinel.ToolSurface;
@@ -63,6 +64,7 @@ public final class Main {
         Path config = null;
         Path baselineFile = Path.of("mcp-sentinel.lock.json");
         Path outFile = null;
+        Path sarifFile = null;
         Finding.Severity failOn = Finding.Severity.HIGH;
 
         for (int i = 1; i < args.length; i++) {
@@ -70,6 +72,7 @@ public final class Main {
                 case "--config" -> config = Path.of(require(args, ++i, err));
                 case "--baseline" -> baselineFile = Path.of(require(args, ++i, err));
                 case "--out" -> outFile = Path.of(require(args, ++i, err));
+                case "--sarif" -> sarifFile = Path.of(require(args, ++i, err));
                 case "--fail-on" -> {
                     String value = require(args, ++i, err).toUpperCase(Locale.ROOT);
                     try {
@@ -108,7 +111,7 @@ public final class Main {
 
         return switch (command) {
             case "lock" -> doLock(surface, outFile == null ? baselineFile : outFile, out, err);
-            case "scan" -> doScan(surface, baselineFile, failOn, out, err);
+            case "scan" -> doScan(surface, baselineFile, failOn, sarifFile, out, err);
             default -> {
                 err.println("mcp-sentinel: 未知命令 '" + command + "'（可用：lock / scan）");
                 yield EXIT_USAGE;
@@ -133,7 +136,7 @@ public final class Main {
     }
 
     private static int doScan(ToolSurface surface, Path baselineFile, Finding.Severity failOn,
-                              PrintStream out, PrintStream err) {
+                              Path sarifFile, PrintStream out, PrintStream err) {
         List<Finding> findings = RiskRules.evaluate(surface);
         SurfaceDiff diff = null;
         if (Files.isRegularFile(baselineFile)) {
@@ -150,6 +153,16 @@ public final class Main {
         ScanReport report = new ScanReport(surface.serverName(), surface.fingerprint(),
                 surface.tools().size(), findings, diff);
         out.println(report.render());
+
+        if (sarifFile != null) {
+            try {
+                SarifWriter.write(report, sarifFile);
+                out.println("SARIF 已写出: " + sarifFile.toAbsolutePath()
+                        + "（可上传到 GitHub Code Scanning，发现会以行内注解出现在 PR 上）");
+            } catch (Exception e) {
+                err.println("mcp-sentinel: 写出 SARIF 失败: " + e.getMessage());
+            }
+        }
 
         if (diff != null && !diff.isClean()) {
             err.println("::error::MCP 工具面与基线不一致（" + diff.totalChanges() + " 处变化）");
@@ -176,7 +189,7 @@ public final class Main {
 
                 用法:
                   mcp-sentinel lock --config <配置> [--out <基线文件>]
-                  mcp-sentinel scan --config <配置> [--baseline <基线文件>] [--fail-on HIGH|MEDIUM|LOW]
+                  mcp-sentinel scan --config <配置> [--baseline <基线文件>] [--fail-on HIGH|MEDIUM|LOW] [--sarif <输出>]
 
                 配置（与主流 MCP 客户端格式一致）:
                   { "server": "my-server", "command": "java", "args": ["-jar", "server.jar"] }
