@@ -12,6 +12,25 @@
 
 </div>
 
+## 快速开始
+
+```bash
+# 直接下载，无需构建
+curl -LO https://github.com/XIAOXUsop/mcp-sentinel/releases/latest/download/mcp-sentinel.jar
+
+# 首次：锁定当前工具面，把生成的 mcp-sentinel.lock.json 提交进版本库
+java -jar mcp-sentinel.jar lock --config mcp.json
+
+# 之后：每次 CI 扫描，与基线对比并查风险
+java -jar mcp-sentinel.jar scan --config mcp.json --sarif results.sarif
+```
+
+配置格式与主流 MCP 客户端一致，可直接从现有配置复制：
+
+```json
+{ "server": "my-server", "command": "java", "args": ["-jar", "my-mcp-server.jar"] }
+```
+
 ## 这不是又一个扫描器
 
 已有的 MCP 安全工具（[snyk/agent-scan](https://github.com/snyk/agent-scan)、
