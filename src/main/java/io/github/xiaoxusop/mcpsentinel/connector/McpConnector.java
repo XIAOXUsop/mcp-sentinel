@@ -49,7 +49,16 @@ public final class McpConnector {
             List<ToolDefinition> tools = new ArrayList<>();
             if (listed != null && listed.tools() != null) {
                 for (McpSchema.Tool tool : listed.tools()) {
-                    tools.add(new ToolDefinition(tool.name(), tool.description(), toJson(tool.inputSchema())));
+                    // 六个字段全都要：title / outputSchema / annotations 都是攻击面。
+                    // 只取 name+description+inputSchema 时，单独翻转 destructiveHint
+                    // 或改 outputSchema 的指纹完全不变——实测退出码 0，等于看不见。
+                    tools.add(new ToolDefinition(
+                            tool.name(),
+                            tool.title(),
+                            tool.description(),
+                            toJson(tool.inputSchema()),
+                            toJson(tool.outputSchema()),
+                            toJson(tool.annotations())));
                 }
             }
             return Result.success(ToolSurface.of(serverName, tools));

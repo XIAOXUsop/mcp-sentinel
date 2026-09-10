@@ -5,63 +5,71 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
 
 /**
- * 一个工具的定义：名称 + 描述 + 入参 schema。
+ * 一个工具的定义：名称 + 标题 + 描述 + 入参 schema + 出参 schema + 注解。
  *
  * <p>这是扫描与指纹的输入单元。之所以不直接用 SDK 的类型，是为了让
  * 指纹与规则成为**不依赖任何 SDK 的纯逻辑**——这样才能离线单测，
  * 也才能在未来换 SDK 版本时不影响检测语义。
+ *
+ * <p><b>为什么六个字段都要进指纹</b>：实测过——单独翻转 {@code annotations.destructiveHint}、
+ * 改 {@code outputSchema}、改 {@code title}，旧版的指纹**完全不变、零 finding、退出码 0**。
+ * 而客户端会依据 {@code destructiveHint} 决定是否自动放行、依据 {@code outputSchema}
+ * 校验返回值，所以这三者都是攻击面。对比同类工具：Vercel 的 {@code fingerprintTools}
+ * 覆盖 title、MCP Hangar 覆盖 outputSchema、mcpward 覆盖 annotations——
+ * 六字段全覆盖是把三者都补上。
  */
-public record ToolDefinition(String name, String description, JsonNode inputSchema) {
+public record ToolDefinition(String name, String title, String description,
+                             JsonNode inputSchema, JsonNode outputSchema, JsonNode annotations) {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public ToolDefinition {
         name = name == null ? "" : name;
+        title = title == null ? "" : title;
         description = description == null ? "" : description;
         inputSchema = inputSchema == null ? MAPPER.createObjectNode() : inputSchema;
+        outputSchema = outputSchema == null ? MAPPER.createObjectNode() : outputSchema;
+        annotations = annotations == null ? MAPPER.createObjectNode() : annotations;
+    }
+
+    /** 只要名称、描述与入参的简写（绝大多数调用点用这个） */
+    public ToolDefinition(String name, String description, JsonNode inputSchema) {
+        this(name, "", description, inputSchema, null, null);
     }
 
     /**
-     * 规范化 JSON：递归按键名排序。
+     * 规范化后的完整形态。指纹对**它**求哈希。
      *
-     * <p>为什么必须规范化：MCP 服务器重新序列化时键序可能变化，若直接对原始 JSON 求哈希，
-     * 会产出大量**假变更**，让基线对比失去意义。规范化后，"内容变了"才是真的变了。
+     * <p>走 {@link SchemaCanonicalizer} 而不是简单按键名排序——语义等价的定义必须得到同一个指纹，
+     * 否则会因为服务端的字段重排而产生大量假变更。
      */
-    public String canonicalForm() {
+    public ObjectNode toJson() {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("name", name);
-        root.put("description", description);
-        root.set("inputSchema", canonicalize(inputSchema));
-        return root.toString();
+        root.put("title", SchemaCanonicalizer.normalizeText(title));
+        root.put("description", SchemaCanonicalizer.normalizeText(description));
+        root.set("inputSchema", SchemaCanonicalizer.canonicalize(inputSchema));
+        root.set("outputSchema", SchemaCanonicalizer.canonicalize(outputSchema));
+        root.set("annotations", SchemaCanonicalizer.canonicalize(annotations));
+        return root;
     }
 
-    private static JsonNode canonicalize(JsonNode node) {
-        if (node == null || node.isNull()) {
-            return MAPPER.nullNode();
-        }
-        if (node.isObject()) {
-            ObjectNode result = MAPPER.createObjectNode();
-            Map<String, JsonNode> sorted = new TreeMap<>();
-            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
-            while (fields.hasNext()) {
-                Map.Entry<String, JsonNode> field = fields.next();
-                sorted.put(field.getKey(), field.getValue());
-            }
-            sorted.forEach((key, value) -> result.set(key, canonicalize(value)));
-            return result;
-        }
-        if (node.isArray()) {
-            var result = MAPPER.createArrayNode();
-            node.forEach(element -> result.add(canonicalize(element)));
-            return result;
-        }
-        return node;
+    public String canonicalForm() {
+        return toJson().toString();
+    }
+
+    /** 从基线文件里读回 */
+    public static ToolDefinition fromJson(JsonNode node) {
+        return new ToolDefinition(
+                node.path("name").asText(""),
+                node.path("title").asText(""),
+                node.path("description").asText(""),
+                node.path("inputSchema"),
+                node.path("outputSchema"),
+                node.path("annotations"));
     }
 
     /** schema 中声明的全部参数名（顶层 properties） */
@@ -84,8 +92,18 @@ public record ToolDefinition(String name, String description, JsonNode inputSche
         return names;
     }
 
-    /** 描述与 schema 拼成的可搜索文本，供规则扫描 */
+    /**
+     * 描述与 schema 拼成的可搜索文本，供规则扫描。
+     *
+     * <p><b>刻意用原文而不是规范化后的形态</b>：规则要看得到零宽字符、控制字符这类
+     * 规范化会抹掉的痕迹。规范化只服务于指纹，两者用途不同，不能合并成一个。
+     */
     public String searchableText() {
-        return name + "\n" + description + "\n" + inputSchema.toPrettyString();
+        StringBuilder sb = new StringBuilder();
+        sb.append(name).append('\n').append(title).append('\n').append(description).append('\n');
+        sb.append(inputSchema.toPrettyString()).append('\n');
+        sb.append(outputSchema.toPrettyString()).append('\n');
+        sb.append(annotations.toPrettyString());
+        return sb.toString();
     }
 }

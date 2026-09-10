@@ -59,6 +59,29 @@ public final class RiskRules {
             findings.addAll(descriptionSchemaMismatch(tool));
         }
         findings.addAll(toolShadowing(surface));
+        findings.addAll(duplicateToolNames(surface));
+        return findings;
+    }
+
+    // ---------- R6：工具名重复 ----------
+
+    /**
+     * 工具名重复。
+     *
+     * <p>任何**以工具名为键**的存储遇到重名都会互相覆盖，于是对其中一个定义的修改会被静默吞掉。
+     * 攻击者只要把投毒工具命名成与既有工具同名，就永久免疫漂移检测——实测旧版基线
+     * 在这种情形下报「工具面与基线一致」并退出 0，而 schema 已经被改宽了。
+     * 规范只要求工具名在单个 server 内唯一（是 SHOULD 不是 MUST），
+     * 并明确警告跨 server 聚合会出现命名冲突，所以这不是畸形输入。
+     */
+    public static List<Finding> duplicateToolNames(ToolSurface surface) {
+        List<Finding> findings = new ArrayList<>();
+        for (String name : surface.duplicateNames()) {
+            findings.add(new Finding("DUPLICATE_TOOL_NAME", Finding.Severity.HIGH, name,
+                    "工具名重复：以工具名为键的存储（含基线）会互相覆盖，"
+                            + "对其中一个定义的修改会被静默吞掉——攻击者可借此绕过漂移检测",
+                    "name=" + name));
+        }
         return findings;
     }
 
