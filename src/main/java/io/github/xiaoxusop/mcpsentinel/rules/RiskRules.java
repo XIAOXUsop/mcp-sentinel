@@ -2,6 +2,7 @@ package io.github.xiaoxusop.mcpsentinel.rules;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import io.github.xiaoxusop.mcpsentinel.Finding;
+import io.github.xiaoxusop.mcpsentinel.Sanitizer;
 import io.github.xiaoxusop.mcpsentinel.ToolDefinition;
 import io.github.xiaoxusop.mcpsentinel.ToolSurface;
 
@@ -60,6 +61,37 @@ public final class RiskRules {
         }
         findings.addAll(toolShadowing(surface));
         findings.addAll(duplicateToolNames(surface));
+        findings.addAll(unsafeNames(surface));
+        return findings;
+    }
+
+    // ---------- R7：名字不符合规范字符集 ----------
+
+    /**
+     * 服务器名或工具名含规范之外的字符。
+     *
+     * <p>MCP 规范要求工具名是 1–128 个 {@code [A-Za-z0-9_.-]}。不合规的名字不只是"不规范"：
+     * 实测它可以夹带换行与控制字符，在**扫描器自己的报告**里伪造出行、
+     * 注入 CI 的工作流命令，并让 SARIF 的 URI 非法导致整份报告被拒收。
+     *
+     * <p>现存 MCP 扫描器没有这条规则——它们都在扫描不可信输入，却把自己的输出当成可信的。
+     */
+    public static List<Finding> unsafeNames(ToolSurface surface) {
+        List<Finding> findings = new ArrayList<>();
+        if (!Sanitizer.isValidName(surface.serverName())) {
+            findings.add(new Finding("UNSAFE_SERVER_NAME", Finding.Severity.HIGH, "",
+                    "服务器名不符合规范字符集：它可以夹带换行与控制字符，"
+                            + "从而在扫描报告里伪造出行、注入 CI 工作流命令、或让 SARIF 失效",
+                    Sanitizer.whyInvalid(surface.serverName())));
+        }
+        for (ToolDefinition tool : surface.sorted()) {
+            if (!Sanitizer.isValidName(tool.name())) {
+                findings.add(new Finding("UNSAFE_TOOL_NAME", Finding.Severity.HIGH, tool.name(),
+                        "工具名不符合 MCP 规范的字符集（1–128 个 [A-Za-z0-9_.-]）："
+                                + "它可以夹带控制字符，污染报告与下游工具",
+                        Sanitizer.whyInvalid(tool.name())));
+            }
+        }
         return findings;
     }
 

@@ -40,11 +40,17 @@ public record ScanReport(String serverName,
         return ToolFingerprint.shortOf(surfaceFingerprint);
     }
 
-    /** 人读报告 */
+    /**
+     * 人读报告。
+     *
+     * <p>服务器名来自**被扫描的服务器**，是不可信输入。实测一个带换行的名字
+     * 足以在报告里伪造出"工具面指纹"、"风险 HIGH=0" 这些行，还能注入
+     * GitHub Actions 的 {@code ::notice::} 工作流命令。
+     */
     public String render() {
         StringBuilder sb = new StringBuilder();
         sb.append("MCP 工具面扫描\n");
-        sb.append("  服务器      : ").append(serverName).append('\n');
+        sb.append("  服务器      : ").append(Sanitizer.forReport(serverName, 120)).append('\n');
         sb.append("  工具数      : ").append(toolCount).append('\n');
         sb.append("  工具面指纹  : ").append(shortFingerprint()).append('\n');
         sb.append("  风险        : HIGH=").append(countOf(Finding.Severity.HIGH))
@@ -59,7 +65,8 @@ public record ScanReport(String serverName,
             for (Finding finding : sortedFindings()) {
                 sb.append("  ").append(finding.format()).append('\n');
                 if (!finding.evidence().isBlank()) {
-                    sb.append("      证据: ").append(finding.evidence()).append('\n');
+                    // 证据直接引自服务器提供的定义，同样要消毒
+                    sb.append("      证据: ").append(Sanitizer.forReport(finding.evidence(), 160)).append('\n');
                 }
             }
         } else {

@@ -155,8 +155,22 @@ public record Baseline(int version,
         if (file.getParent() != null) {
             Files.createDirectories(file.getParent());
         }
-        Files.writeString(file, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root),
+        Files.writeString(file, MAPPER.writer(prettyPrinter()).writeValueAsString(root),
                 StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 让数组也逐元素换行。
+     *
+     * <p>默认的美化输出会把 {@code "tools" : [ {} } 挤在同一行，两个后果：
+     * 一是这份"要提交进版本库、出现在评审里"的文件变得难读也难 diff；
+     * 二是注解无法定位到具体工具所在的行（SARIF 的 {@code region.startLine} 需要真实行号）。
+     */
+    static com.fasterxml.jackson.core.util.DefaultPrettyPrinter prettyPrinter() {
+        com.fasterxml.jackson.core.util.DefaultPrettyPrinter printer =
+                new com.fasterxml.jackson.core.util.DefaultPrettyPrinter();
+        printer.indentArraysWith(com.fasterxml.jackson.core.util.DefaultIndenter.SYSTEM_LINEFEED_INSTANCE);
+        return printer;
     }
 
     // ---------- 对比 ----------

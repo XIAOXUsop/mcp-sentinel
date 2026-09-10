@@ -27,8 +27,14 @@ public record Finding(String ruleId, Severity severity, String toolName, String 
         LOW
     }
 
-    /** SARIF / 日志里的一行 */
+    /**
+     * SARIF / 日志里的一行。
+     *
+     * <p>工具名与说明都要消毒：它们可能含服务器可控的内容（参数名、schema 片段），
+     * 而一个夹带换行的参数名足以在报告里伪造出下一行。
+     */
     public String format() {
-        return "[%s] %s  %s  %s".formatted(severity, ruleId, toolName, message);
+        return "[%s] %s  %s  %s".formatted(severity, ruleId,
+                Sanitizer.forReport(toolName, 80), Sanitizer.forReport(message, 250));
     }
 }

@@ -135,7 +135,7 @@ public final class Main {
 
         return switch (command) {
             case "lock" -> doLock(surface, outFile == null ? baselineFile : outFile, out, err);
-            case "scan" -> doScan(surface, baselineFile, outFile, sarifFile,
+            case "scan" -> doScan(surface, config, baselineFile, outFile, sarifFile,
                     failOn, failOnChange, acceptChanges, out, err);
             default -> {
                 err.println("mcp-sentinel: 未知命令 '" + command + "'（可用：lock / scan）");
@@ -160,7 +160,8 @@ public final class Main {
         return EXIT_OK;
     }
 
-    private static int doScan(ToolSurface surface, Path baselineFile, Path outFile, Path sarifFile,
+    private static int doScan(ToolSurface surface, Path configFile, Path baselineFile,
+                              Path outFile, Path sarifFile,
                               Finding.Severity failOn, ChangeSeverity failOnChange,
                               boolean acceptChanges, PrintStream out, PrintStream err) {
         List<Finding> findings = RiskRules.evaluate(surface);
@@ -220,7 +221,9 @@ public final class Main {
 
         if (sarifFile != null) {
             try {
-                SarifWriter.write(report, sarifFile);
+                // 位置必须落在仓库内真实存在的文件上，否则 GitHub Code Scanning
+                // 不会显示这些结果（官方规则 GH1005）。有基线就指向基线并精确到行。
+                SarifWriter.write(report, SarifWriter.Source.fromFiles(configFile, baselineFile), sarifFile);
                 out.println("SARIF 已写出: " + sarifFile.toAbsolutePath()
                         + "（可上传到 GitHub Code Scanning，发现会以行内注解出现在 PR 上）");
             } catch (Exception e) {
