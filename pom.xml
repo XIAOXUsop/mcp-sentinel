@@ -6,7 +6,7 @@
 
     <groupId>io.github.xiaoxusop</groupId>
     <artifactId>mcp-sentinel</artifactId>
-    <version>0.5.0</version>
+    <version>0.5.1</version>
     <packaging>jar</packaging>
 
     <name>mcp-sentinel</name>
@@ -76,6 +76,36 @@
     <build>
         <finalName>mcp-sentinel</finalName>
         <plugins>
+            <!--
+              把 LICENSE 打进 jar 的 META-INF。
+              这个 jar 里有好几份依赖的许可证（shade 带过来的），但**没有它自己的**——
+              一个可自由再分发的产物必须自带它的许可条件。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.3.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-license-into-jar</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}/META-INF</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${project.basedir}</directory>
+                                    <includes>
+                                        <include>LICENSE</include>
+                                    </includes>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -98,6 +128,15 @@
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                <!--
+                                  追加而不是覆盖 META-INF/LICENSE：本项目自己的 MIT 许可证与
+                                  依赖带来的许可证会在同一个路径上撞车，而 shade 默认保留先遇到的
+                                  那一份——**静默丢掉另一个**。实测确认过：加了自己的 LICENSE 之后，
+                                  原本那份 11358 字节的 Apache 许可证就从 jar 里消失了。
+                                -->
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                                    <resource>META-INF/LICENSE</resource>
+                                </transformer>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>io.github.xiaoxusop.mcpsentinel.cli.Main</mainClass>
                                 </transformer>

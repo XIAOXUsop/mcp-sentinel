@@ -78,7 +78,7 @@ public final class McpConnector {
 
         try (McpSyncClient client = McpClient
                 .sync(transport)
-                .clientInfo(new McpSchema.Implementation("mcp-sentinel", "0.3.0"))
+                .clientInfo(new McpSchema.Implementation("mcp-sentinel", "0.5.1"))
                 .requestTimeout(target.timeout() == null ? REQUEST_TIMEOUT : target.timeout())
                 .build()) {
 
