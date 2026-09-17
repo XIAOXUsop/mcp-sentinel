@@ -17,6 +17,13 @@ MCP 的工具定义是**运行时从服务器拉取**的，而模型会照着这
 服务器在某次启动后把描述或 schema 改掉，调用方**看不到**——这就是 OWASP MCP03 说的
 tool poisoning / rug pull：先发布人畜无害的定义取得信任，之后再悄悄换成有权限的那一版。
 
+**下载**（一个可执行 jar，无需构建、无需安装）：
+
+```bash
+curl -LO https://github.com/XIAOXUsop/mcp-sentinel/releases/latest/download/mcp-sentinel.jar
+java -jar mcp-sentinel.jar --help
+```
+
 ```bash
 # 首次：锁下当前工具面，把生成的 mcp-sentinel.lock.json 提交进版本库
 java -jar mcp-sentinel.jar lock --config mcp.json
