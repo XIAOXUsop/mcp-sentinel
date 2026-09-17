@@ -172,6 +172,18 @@ public final class Main {
             target = target.withTimeout(timeoutOverride);
         }
 
+        // 请求头里的环境变量引用属于**配置**问题，不是连接问题：变量名写错时
+        // 报"连不上服务器"会把人引到网络排查上去。所以在这里先解析一次，
+        // 失败按用法/配置错误退出。
+        if (target.transport() == ServerTarget.Transport.STREAMABLE_HTTP) {
+            try {
+                target.resolveHeaders(System::getenv);
+            } catch (IOException e) {
+                err.println("mcp-sentinel: 配置错误: " + e.getMessage());
+                return EXIT_USAGE;
+            }
+        }
+
         // fail-closed：基线是本地文件，先校验再连服务器。已经知道这次扫描给不出漂移结论，
         // 就不必再去启动一个不可信的 MCP 服务器子进程。
         Baseline baseline = null;
@@ -186,7 +198,7 @@ public final class Main {
         McpConnector.Result connection = McpConnector.connect(target);
         if (!connection.ok()) {
             err.println("mcp-sentinel: 连接服务器失败: " + connection.error());
-            err.println("  目标: " + target.command() + " " + String.join(" ", target.args()));
+            err.println("  目标: " + target.describeTarget());
             return EXIT_CONNECT;
         }
         ToolSurface surface = connection.surface();

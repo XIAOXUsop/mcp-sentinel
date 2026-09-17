@@ -28,16 +28,31 @@ java -jar mcp-sentinel.jar scan --config mcp.json
 java -jar mcp-sentinel.jar scan --config mcp.json --accept-changes
 ```
 
-配置格式与主流 MCP 客户端一致，可直接从现有配置复制：
+配置格式与主流 MCP 客户端一致，可直接从现有配置复制。两种传输：
 
-```json
+```jsonc
+// ① stdio：起本地子进程（默认，与 Claude Desktop / VS Code / Cursor 的配置同形）
 {
   "server": "my-server",
   "command": "java",
   "args": ["-jar", "my-mcp-server.jar"],
   "env": { "API_KEY": "..." }
 }
+
+// ② Streamable HTTP：扫远程端点
+{
+  "server": "my-remote-server",
+  "transport": "streamable-http",
+  "url": "https://mcp.example.com/mcp",
+  "headers": { "Authorization": "Bearer ${MCP_TOKEN}" }   // 密钥用环境变量引用
+}
 ```
+
+> **请求头里的密钥用 `${环境变量名}` 引用，不要写明文。** 配置文件要提交进版本库，
+> 而扫描器的输入恰恰是不可信的第三方配置——明文等于让"扫别人的服务器"顺手把自家令牌交出去。
+> 引用了不存在的变量会在连接前直接失败（退出 1，按配置错误处理），
+> **不会发一个空头出去**：空 `Authorization` 会以 401 失败，真正的原因（变量名写错）
+> 就被埋进了一个看起来像"服务器拒绝"的错误里。
 
 ## 三件它比同类做得更细的事
 
@@ -136,6 +151,9 @@ mcp-sentinel scan --config <配置> [选项]
 | `--accept-changes` | 批准本次变更并写回基线，并打印**审批摘要**（见下） |
 | `--timeout N` | 连接超时秒数（默认取配置里的 `timeoutSeconds`，否则 20） |
 | `--help` | 用法 |
+
+两种传输共用同一套检测语义：规则、指纹、基线都不认识"传输"这个概念，
+分叉只在连接层的一个方法里。换传输不该改变任何一条检测结果。
 
 | 退出码 | 含义 |
 |---:|---|
@@ -260,9 +278,6 @@ mcp-sentinel scan --config <配置> [选项]
 
 ## 已知限制
 
-- **只支持 stdio 传输。** 连接层目前只用 `StdioClientTransport`（起本地子进程走 JSON-RPC）。
-  Streamable HTTP 形式的 MCP 服务器还扫不了——配置文件里也没有对应的字段，
-  与其接受一个会被忽略的配置项，不如在这里说清楚。
 - **不做运行时。** 只读工具定义，不执行工具、不拦截 `tools/call`、不扫源码与依赖。
   参数注入、越权调用这类运行时问题不在覆盖范围内。
 - **跨工具拆分只抓相邻片段。** 用 Shamir 秘密共享之类方式把指令拆成互不连续的多个片段
@@ -271,6 +286,10 @@ mcp-sentinel scan --config <配置> [选项]
 - **同形字折叠表不完备。** 只覆盖常见的西里尔 / 希腊 / 全角替换；罕见的同形字符仍可绕过。
 - **不支持 `cwd`。** MCP SDK 的 `ServerParameters` 没有暴露工作目录（实测其 Builder 只有
   `command` / `args` / `env`）。与其假装支持，不如在这里说清楚。
+- **HTTP 传输不做 OAuth 授权流程。** 只发配置里写好的静态请求头（值可用 `${VAR}` 引用环境变量）。
+  需要交互式授权的服务器，请先用别的工具取到令牌再注入环境变量。
+- **`--timeout` 在两种传输下含义不同**：stdio 是请求超时，HTTP 是**连接**超时。
+  远程服务器可能连得上但响应很慢——那种情况下表现为请求超时，不是退出码 2。
 - **基线存完整定义，文件会变大**（500 工具约 200–400KB）。这是语义分级能力的必要成本。
 - **规范化规则升级会造成一次全量假变更。** 基线里记了 `schemaVersion`，
   版本不符时会明确提示"请重新 lock，这不是攻击"，而不是让人误判。
@@ -280,7 +299,7 @@ mcp-sentinel scan --config <配置> [选项]
 ## 构建与测试
 
 ```bash
-./mvnw verify      # 92 项测试
+./mvnw verify      # 107 项测试
 ```
 
 含**真实端到端用例**：起 MCP 服务器子进程 → 走 MCP 协议拉取工具面 → 检查退出码。

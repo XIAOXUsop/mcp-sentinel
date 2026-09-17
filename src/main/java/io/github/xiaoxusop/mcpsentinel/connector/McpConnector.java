@@ -5,14 +5,17 @@ import io.github.xiaoxusop.mcpsentinel.ToolSurface;
 import io.github.xiaoxusop.mcpsentinel.ToolFingerprint;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.client.transport.StdioClientTransport;
+import io.modelcontextprotocol.spec.McpClientTransport;
 import io.modelcontextprotocol.json.McpJsonDefaults;
 import io.modelcontextprotocol.spec.McpSchema;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 通过 MCP 协议连到服务器，把工具面拉下来。
@@ -30,7 +33,30 @@ public final class McpConnector {
     private McpConnector() {
     }
 
-    public static Result connect(ServerTarget target) {
+    /** 异常到可读错误：消息为空时退回类名，避免报告里出现一个空白的"失败原因" */
+    private static String failureMessage(Exception e) {
+        String message = e.getMessage();
+        return message == null || message.isBlank() ? e.getClass().getSimpleName() : message;
+    }
+
+    /**
+     * 按配置里的传输方式建连接。
+     *
+     * <p>两种传输只在这一个方法里分叉：上面 {@link #connect} 之后的初始化、拉工具面、
+     * 错误处理完全共用。规则、指纹、基线这些都不认识"传输"这个概念——
+     * 换传输不该改变任何一条检测语义。
+     */
+    private static McpClientTransport buildTransport(ServerTarget target) throws Exception {
+        if (target.transport() == ServerTarget.Transport.STREAMABLE_HTTP) {
+            Map<String, String> headers = target.resolveHeaders(System::getenv);
+            return HttpClientStreamableHttpTransport.builder(target.url())
+                    .jsonMapper(McpJsonDefaults.getMapper())
+                    .connectTimeout(target.timeout())
+                    .httpRequestCustomizer((requestBuilder, method, uri, body, context) ->
+                            headers.forEach(requestBuilder::header))
+                    .build();
+        }
+
         ServerParameters.Builder parameters = ServerParameters.builder(target.command())
                 .args(target.args().toArray(new String[0]));
         // env 是主流客户端配置的标准字段，很多 server 靠它拿 API key；
@@ -38,10 +64,21 @@ public final class McpConnector {
         if (!target.env().isEmpty()) {
             parameters.env(target.env());
         }
+        return new StdioClientTransport(parameters.build(), McpJsonDefaults.getMapper());
+    }
+
+    public static Result connect(ServerTarget target) {
+        McpClientTransport transport;
+        try {
+            transport = buildTransport(target);
+        } catch (Exception e) {
+            // 配置层面的问题（比如引用了不存在的环境变量）在连接之前就要说清楚
+            return Result.failure(target.serverName(), failureMessage(e));
+        }
 
         try (McpSyncClient client = McpClient
-                .sync(new StdioClientTransport(parameters.build(), McpJsonDefaults.getMapper()))
-                .clientInfo(new McpSchema.Implementation("mcp-sentinel", "0.2.0"))
+                .sync(transport)
+                .clientInfo(new McpSchema.Implementation("mcp-sentinel", "0.3.0"))
                 .requestTimeout(target.timeout() == null ? REQUEST_TIMEOUT : target.timeout())
                 .build()) {
 

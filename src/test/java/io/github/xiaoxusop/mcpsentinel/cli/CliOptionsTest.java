@@ -222,4 +222,64 @@ class CliOptionsTest {
         assertTrue(result.err().contains("definitely-not-a-real-command-xyz"), result.err());
         assertFalse(result.err().contains("\tat "), result.err());
     }
+
+    // ---------- Streamable HTTP 的退出码 ----------
+
+    /** 连不上的 HTTP 端点与连不上的 stdio 命令是同一类问题，退出码也该一样 */
+    @Test
+    @Timeout(value = 90, unit = TimeUnit.SECONDS)
+    void unreachableHttpEndpointExitsWithTwo(@TempDir Path dir) throws Exception {
+        Path file = config(dir, """
+                {"server":"remote","transport":"streamable-http","url":"http://127.0.0.1:1/mcp"}""");
+
+        Invocation result = invoke("scan", "--config", file.toString(), "--risk-only");
+
+        assertEquals(2, result.code(), result.out() + result.err());
+        assertTrue(result.err().contains("连接服务器失败"), result.err());
+        // 诊断里要给的是 URL，而不是 stdio 的 command/args（那种情况下是空的）
+        assertTrue(result.err().contains("127.0.0.1:1"), result.err());
+    }
+
+    /**
+     * 请求头引用了不存在的环境变量是**配置**错误，不是连接错误。
+     *
+     * <p>归到"连不上服务器"会把人引到网络排查上去，而真正的原因是自己变量名写错了。
+     */
+    @Test
+    void missingHeaderEnvironmentVariableIsAConfigError(@TempDir Path dir) throws Exception {
+        Path file = config(dir, """
+                {"server":"remote","transport":"streamable-http","url":"http://127.0.0.1:1/mcp",
+                 "headers":{"Authorization":"Bearer ${MCP_SENTINEL_DEFINITELY_UNSET}"}}""");
+
+        Invocation result = invoke("scan", "--config", file.toString(), "--risk-only");
+
+        assertEquals(1, result.code(), result.out() + result.err());
+        assertTrue(result.err().contains("配置错误"), result.err());
+        assertTrue(result.err().contains("MCP_SENTINEL_DEFINITELY_UNSET"), result.err());
+        assertFalse(result.err().contains("连接服务器失败"), result.err());
+    }
+
+    /** http 传输却把 url 写错/漏写时，配置解析阶段就要报出来 */
+    @Test
+    void httpWithoutUrlIsAConfigError(@TempDir Path dir) throws Exception {
+        Path file = config(dir, """
+                {"server":"remote","transport":"streamable-http","command":"java"}""");
+
+        Invocation result = invoke("scan", "--config", file.toString(), "--risk-only");
+
+        assertEquals(1, result.code(), result.out() + result.err());
+        assertTrue(result.err().contains("url"), result.err());
+    }
+
+    @Test
+    void unknownTransportIsAConfigError(@TempDir Path dir) throws Exception {
+        Path config = dir.resolve("mcp.json");
+        Files.writeString(config, """
+                {"server":"s","transport":"carrier-pigeon","url":"http://x/mcp"}""");
+
+        Invocation result = invoke("scan", "--config", config.toString(), "--risk-only");
+
+        assertEquals(1, result.code(), result.out() + result.err());
+        assertTrue(result.err().contains("stdio"), result.err());
+    }
 }
