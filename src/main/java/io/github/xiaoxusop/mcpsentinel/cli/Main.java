@@ -7,6 +7,7 @@ import io.github.xiaoxusop.mcpsentinel.Finding;
 import io.github.xiaoxusop.mcpsentinel.SarifWriter;
 import io.github.xiaoxusop.mcpsentinel.ScanReport;
 import io.github.xiaoxusop.mcpsentinel.SurfaceDiff;
+import io.github.xiaoxusop.mcpsentinel.ToolFingerprint;
 import io.github.xiaoxusop.mcpsentinel.ToolSurface;
 import io.github.xiaoxusop.mcpsentinel.connector.McpConnector;
 import io.github.xiaoxusop.mcpsentinel.connector.ServerTarget;
@@ -24,6 +25,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
+import java.util.Comparator;
 
 /**
  * mcp-sentinel 命令行。
@@ -240,11 +243,14 @@ public final class Main {
             // 记下来是为了让同一条变更在后续提交里仍然算已批准——审批不该因为
             // "改了别的东西"而失效。指纹含变更后的内容摘要，所以"批准后再悄悄改一次"
             // 会得到不同的指纹，仍然会拦下。
+            List<Change> accepted = diff == null ? List.of() : diff.changes();
             try {
+                Baseline before = baseline;
                 Baseline updated = Baseline.of(surface, mergeAccepted(baseline, diff));
                 updated.write(baselineFile);
-                out.println("已接受 " + (diff == null ? 0 : diff.totalChanges())
-                        + " 处变更并写回基线: " + baselineFile.toAbsolutePath());
+                out.println("已接受 " + accepted.size() + " 处变更并写回基线: "
+                        + baselineFile.toAbsolutePath());
+                printAcceptanceSummary(accepted, before, updated, findings, failOn, out);
             } catch (IOException e) {
                 err.println("mcp-sentinel: 写回基线失败: " + e.getMessage());
                 return EXIT_USAGE;
@@ -346,6 +352,81 @@ public final class Main {
                     + "再决定是否重新运行 `mcp-sentinel lock`。");
             return new BaselineLoad(null);
         }
+    }
+
+    /**
+     * 把"这次批准了什么"完整打出来。
+     *
+     * <p>批准动作会改写基线文件，而基线是"当初批准的是什么"的证据。如果只在提交里看到
+     * 一个 `mcp-sentinel.lock.json` 的二进制式 diff，评审者实际上没有任何可审的东西——
+     * 他看不出被批准的是「加了个可选参数」还是「描述被换成了另一段话」。
+     *
+     * <p>所以这里把三件事摊开：批准了哪些工具、每条变更的级别与前后摘要、
+     * 以及**基线的新指纹**（评审者据此确认"我批准的确实是这一版工具面"）。
+     *
+     * <p><b>静态风险发现不在批准范围内。</b>它们描述的是当前工具面本身有问题，
+     * 而不是"和上次不一样"。批准基线不会、也不该让它们消失——这一点必须说出来，
+     * 否则很容易被误以为"批准过就没事了"。
+     */
+    private static void printAcceptanceSummary(List<Change> accepted, Baseline before, Baseline after,
+                                               List<Finding> findings,
+                                               Finding.Severity failOn, PrintStream out) {
+        Map<String, String> previousFingerprints = new LinkedHashMap<>();
+        for (Baseline.ToolEntry entry : before.tools()) {
+            previousFingerprints.putIfAbsent(entry.tool().name(), entry.fingerprint());
+        }
+
+        out.println();
+        out.println("本次批准的变更（写进基线的 acceptedChanges，后续提交里继续算已批准）：");
+        if (accepted.isEmpty()) {
+            out.println("  （无——工具面与基线一致，这次批准只是把基线指纹刷新了一遍）");
+        }
+        Map<String, Integer> bySeverity = new TreeMap<>();
+        for (Change change : accepted) {
+            bySeverity.merge(change.severity().name(), 1, Integer::sum);
+            String was = previousFingerprints.getOrDefault(change.toolName(), "-");
+            out.println("  [%s] %-28s %-22s %s → %s".formatted(
+                    change.severity(), change.id(), change.describe(),
+                    shortDigest(was), shortDigest(change.afterDigest())));
+            if (!change.detail().isBlank()) {
+                out.println("      " + change.detail());
+            }
+            out.println("      变更指纹 " + change.digest());
+        }
+        out.println("  按级别统计: " + bySeverity);
+
+        out.println();
+        out.println("工具面指纹 : " + shortFingerprint(before) + " → " + shortFingerprint(after));
+        out.println("基线文件   : " + after.generatedAt());
+
+        long blocking = findings.stream().filter(f -> f.severity().ordinal() <= failOn.ordinal()).count();
+        out.println();
+        out.println("静态风险发现**不参与批准**：它们描述的是当前工具面本身有问题，而不是「和上次不一样」。");
+        if (findings.isEmpty()) {
+            out.println("  本次没有静态风险发现。");
+        } else {
+            out.println("  本次仍有 " + findings.size() + " 条发现，其中达到 " + failOn + " 级别的有 "
+                    + blocking + " 条；批准基线不会让它们消失，需要改工具定义本身：");
+            findings.stream()
+                    .sorted(Comparator.comparing((Finding f) -> f.severity().ordinal())
+                            .thenComparing(Finding::toolName))
+                    .limit(10)
+                    .forEach(f -> out.println("    " + f.format()));
+            if (findings.size() > 10) {
+                out.println("    …共 " + findings.size() + " 条，完整清单见报告。");
+            }
+        }
+    }
+
+    private static String shortFingerprint(Baseline baseline) {
+        return ToolFingerprint.shortOf(baseline.surfaceFingerprint());
+    }
+
+    private static String shortDigest(String digest) {
+        if (digest == null || digest.isBlank() || "-".equals(digest)) {
+            return "-";
+        }
+        return digest.substring(0, Math.min(16, digest.length()));
     }
 
     /** 把这次被批准的变更指纹并入基线原有的已批准集合，按指纹去重 */
