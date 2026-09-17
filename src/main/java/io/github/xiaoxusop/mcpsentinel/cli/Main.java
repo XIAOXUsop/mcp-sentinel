@@ -42,9 +42,16 @@ import java.util.Map;
  *   <li>{@code 2} 连不上目标服务器</li>
  *   <li>{@code 3} 命中达到阈值的风险规则</li>
  *   <li>{@code 4} 工具面有达到阈值的未批准变更</li>
+ *   <li>{@code 5} 基线不可用（缺失 / 不是普通文件 / 不可读 / 损坏 / 版本不兼容 / 内容不全）
+ *       ——漂移检测这一核心能力没有生效</li>
+ *   <li>{@code 6} 输出产物写入失败（{@code --out} / {@code --sarif}）</li>
  * </ul>
- * 两者同时出现时返回 {@code 4}——漂移是这个工具的核心信号。两种情况都会各自输出
+ * 风险与漂移同时出现时返回 {@code 4}——漂移是这个工具的核心信号。两种情况都会各自输出
  * 一行 {@code ::error::}，不会因为先判漂移就把风险项的注解吞掉。
+ *
+ * <p><b>fail-closed</b>：{@code scan} 默认要求基线可用。基线读不到时不会退化成
+ * "只做风险扫描然后返回 0"——那会让一次配置事故看起来像一次干净通过。
+ * 确实只要静态规则时，用 {@code --risk-only} 显式声明。
  */
 public final class Main {
 
@@ -53,6 +60,8 @@ public final class Main {
     static final int EXIT_CONNECT = 2;
     static final int EXIT_FINDINGS = 3;
     static final int EXIT_DRIFT = 4;
+    static final int EXIT_BASELINE = 5;
+    static final int EXIT_OUTPUT = 6;
 
     private Main() {
     }
@@ -72,20 +81,26 @@ public final class Main {
         String command = args[0];
         Path config = null;
         Path baselineFile = Path.of("mcp-sentinel.lock.json");
+        boolean baselineExplicit = false;
         Path outFile = null;
         Path sarifFile = null;
         Finding.Severity failOn = Finding.Severity.HIGH;
         ChangeSeverity failOnChange = ChangeSeverity.BREAKING;
         boolean acceptChanges = false;
+        boolean riskOnly = false;
         java.time.Duration timeoutOverride = null;
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
                 case "--config" -> config = Path.of(require(args, ++i, err));
-                case "--baseline" -> baselineFile = Path.of(require(args, ++i, err));
+                case "--baseline" -> {
+                    baselineFile = Path.of(require(args, ++i, err));
+                    baselineExplicit = true;
+                }
                 case "--out" -> outFile = Path.of(require(args, ++i, err));
                 case "--sarif" -> sarifFile = Path.of(require(args, ++i, err));
                 case "--accept-changes" -> acceptChanges = true;
+                case "--risk-only" -> riskOnly = true;
                 case "--timeout" -> {
                     String value = require(args, ++i, err);
                     try {
@@ -127,6 +142,20 @@ public final class Main {
             err.println("mcp-sentinel: --accept-changes 只对 scan 有意义");
             return EXIT_USAGE;
         }
+        if (riskOnly && !"scan".equals(command)) {
+            err.println("mcp-sentinel: --risk-only 只对 scan 有意义");
+            return EXIT_USAGE;
+        }
+        if (riskOnly && acceptChanges) {
+            err.println("mcp-sentinel: --risk-only 与 --accept-changes 互斥"
+                    + "（前者不做漂移检测，后者要批准漂移）");
+            return EXIT_USAGE;
+        }
+        if (riskOnly && baselineExplicit) {
+            err.println("mcp-sentinel: --risk-only 与 --baseline 互斥"
+                    + "（显式给了基线文件，就应该做漂移检测）");
+            return EXIT_USAGE;
+        }
 
         ServerTarget target;
         try {
@@ -139,6 +168,18 @@ public final class Main {
         if (timeoutOverride != null) {
             target = target.withTimeout(timeoutOverride);
         }
+
+        // fail-closed：基线是本地文件，先校验再连服务器。已经知道这次扫描给不出漂移结论，
+        // 就不必再去启动一个不可信的 MCP 服务器子进程。
+        Baseline baseline = null;
+        if ("scan".equals(command) && !riskOnly) {
+            BaselineLoad loaded = loadBaseline(baselineFile, err);
+            if (!loaded.ok()) {
+                return EXIT_BASELINE;
+            }
+            baseline = loaded.baseline();
+        }
+
         McpConnector.Result connection = McpConnector.connect(target);
         if (!connection.ok()) {
             err.println("mcp-sentinel: 连接服务器失败: " + connection.error());
@@ -149,8 +190,8 @@ public final class Main {
 
         return switch (command) {
             case "lock" -> doLock(surface, outFile == null ? baselineFile : outFile, out, err);
-            case "scan" -> doScan(surface, config, baselineFile, outFile, sarifFile,
-                    failOn, failOnChange, acceptChanges, out, err);
+            case "scan" -> doScan(surface, config, baselineFile, baseline, outFile, sarifFile,
+                    failOn, failOnChange, acceptChanges, riskOnly, out, err);
             default -> {
                 err.println("mcp-sentinel: 未知命令 '" + command + "'（可用：lock / scan）");
                 yield EXIT_USAGE;
@@ -175,22 +216,19 @@ public final class Main {
     }
 
     private static int doScan(ToolSurface surface, Path configFile, Path baselineFile,
-                              Path outFile, Path sarifFile,
+                              Baseline loadedBaseline, Path outFile, Path sarifFile,
                               Finding.Severity failOn, ChangeSeverity failOnChange,
-                              boolean acceptChanges, PrintStream out, PrintStream err) {
+                              boolean acceptChanges, boolean riskOnly,
+                              PrintStream out, PrintStream err) {
         List<Finding> findings = RiskRules.evaluate(surface);
-        Baseline baseline = null;
+        Baseline baseline = loadedBaseline;
         SurfaceDiff diff = null;
-        if (Files.isRegularFile(baselineFile)) {
-            try {
-                baseline = Baseline.read(baselineFile);
-                diff = baseline.diffAgainst(surface);
-            } catch (Exception e) {
-                err.println("mcp-sentinel: 读取基线失败（将只做风险扫描）: " + e.getMessage());
-            }
+
+        if (riskOnly) {
+            out.println("模式：--risk-only（显式跳过基线比对，本次不检测工具面漂移）");
         } else {
-            err.println("提示：未找到基线文件 " + baselineFile + "，本次只做静态风险扫描。"
-                    + "运行 `mcp-sentinel lock` 生成基线后可同时检测工具面漂移。");
+            // 基线已在连接服务器之前校验过；这里只做比对
+            diff = baseline.diffAgainst(surface);
         }
 
         if (acceptChanges) {
@@ -220,6 +258,7 @@ public final class Main {
         String rendered = report.render();
         out.println(rendered);
 
+        boolean outputFailed = false;
         if (outFile != null) {
             // 旧版把 --out 解析出来却在 scan 里从不使用——不报错、不警告、不产生文件
             try {
@@ -230,6 +269,7 @@ public final class Main {
                 err.println("报告已写出: " + outFile.toAbsolutePath());
             } catch (IOException e) {
                 err.println("mcp-sentinel: 写出报告失败: " + e.getMessage());
+                outputFailed = true;
             }
         }
 
@@ -241,7 +281,10 @@ public final class Main {
                 out.println("SARIF 已写出: " + sarifFile.toAbsolutePath()
                         + "（可上传到 GitHub Code Scanning，发现会以行内注解出现在 PR 上）");
             } catch (Exception e) {
+                // 旧版只打一行 stderr 就继续，最终可能以 0 退出。SARIF 是 CI 真正消费的产物，
+                // 写不出来等于这次扫描没有结果上传，却报成功。
                 err.println("mcp-sentinel: 写出 SARIF 失败: " + e.getMessage());
+                outputFailed = true;
             }
         }
 
@@ -256,10 +299,53 @@ public final class Main {
             err.println("::error::MCP 工具面有 " + blocking.size() + " 处未批准的变更达到 "
                     + failOnChange + " 级别（共 " + diff.totalChanges() + " 处变化）");
         }
+        if (outputFailed) {
+            err.println("::error::输出产物写入失败，本次扫描结果不完整（CI 拿不到报告/SARIF）");
+        }
         if (!blocking.isEmpty()) {
             return EXIT_DRIFT;
         }
-        return hasFindings ? EXIT_FINDINGS : EXIT_OK;
+        if (hasFindings) {
+            return EXIT_FINDINGS;
+        }
+        return outputFailed ? EXIT_OUTPUT : EXIT_OK;
+    }
+
+    /** 基线加载结果：要么可用，要么已经打印了失败原因 */
+    private record BaselineLoad(Baseline baseline) {
+        boolean ok() {
+            return baseline != null;
+        }
+    }
+
+    /**
+     * 读基线，任何一种读不出来的情况都返回失败。
+     *
+     * <p>刻意<b>不</b>在这里重新生成基线：自动重建会把"基线被换掉了"这件事
+     * 变成一次安静的自愈，而基线本身就是"当初批准的是什么"的证据。
+     */
+    private static BaselineLoad loadBaseline(Path baselineFile, PrintStream err) {
+        if (!Files.exists(baselineFile)) {
+            err.println("mcp-sentinel: 找不到基线文件 " + baselineFile.toAbsolutePath()
+                    + "，无法检测工具面漂移。");
+            err.println("  首次使用：运行 `mcp-sentinel lock --config <配置> --out " + baselineFile
+                    + "`，并把生成的基线提交进版本库。");
+            err.println("  若你确实只想跑静态风险规则、不做漂移检测：显式加 `--risk-only`。");
+            return new BaselineLoad(null);
+        }
+        if (!Files.isRegularFile(baselineFile)) {
+            err.println("mcp-sentinel: 基线路径不是普通文件：" + baselineFile.toAbsolutePath()
+                    + "（可能是目录、符号链接指向的目标不存在，或权限不足）。");
+            return new BaselineLoad(null);
+        }
+        try {
+            return new BaselineLoad(Baseline.read(baselineFile));
+        } catch (Exception e) {
+            err.println("mcp-sentinel: 基线不可用，漂移检测无法进行：" + e.getMessage());
+            err.println("  不会自动重建基线——请人工确认这份文件为何不可读，"
+                    + "再决定是否重新运行 `mcp-sentinel lock`。");
+            return new BaselineLoad(null);
+        }
     }
 
     /** 把这次被批准的变更指纹并入基线原有的已批准集合，按指纹去重 */
@@ -295,6 +381,7 @@ public final class Main {
 
                 选项:
                   --baseline <文件>        基线的位置（默认 mcp-sentinel.lock.json）
+                  --risk-only              只跑静态风险规则，不做漂移检测（显式选择）
                   --out <文件>             把报告另存一份
                   --sarif <文件>           输出 SARIF 2.1.0
                   --fail-on LEVEL          风险规则在哪个级别阻断（HIGH / MEDIUM / LOW，默认 HIGH）
@@ -305,6 +392,11 @@ public final class Main {
 
                 配置（与主流 MCP 客户端格式一致）:
                   { "server": "my-server", "command": "java", "args": ["-jar", "server.jar"] }
+
+                fail-closed:
+                  scan 默认要求基线可用。基线缺失 / 不是普通文件 / 不可读 / 损坏 /
+                  版本不兼容 / 内容不全时一律退出 5，不会退化成"只做风险扫描然后返回 0"。
+                  确实只要静态规则时，用 --risk-only 显式声明。
 
                 它检测什么:
                   · 工具描述里夹带面向模型的指令（tool poisoning / OWASP MCP03）
@@ -317,6 +409,7 @@ public final class Main {
                     「扩大攻击面 / 破坏调用方 / 纯信息性」三档分级
 
                 退出码: 0 通过 · 1 用法错误 · 2 连接失败 · 3 命中风险 · 4 工具面有未批准变更
+                        · 5 基线不可用（漂移检测未生效）· 6 输出产物写入失败
                 """);
     }
 }

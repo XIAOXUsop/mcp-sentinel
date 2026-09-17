@@ -128,6 +128,9 @@ class CliEndToEndTest {
      *
      * <p>旧版把 {@code --out} 解析出来却在 scan 里从不使用——不报错、不警告、不产生文件。
      * 静默忽略一个用户明确给出的输出参数，比报错更糟：脚本会以为报告已经落盘。
+     *
+     * <p>带 {@code --risk-only} 是因为本用例关心的是 {@code --out}，不是漂移检测；
+     * 工具的默认行为是 fail-closed（见 {@code unusableBaselineAlwaysExitsFive}）。
      */
     @Test
     @Timeout(value = 180, unit = TimeUnit.SECONDS)
@@ -139,11 +142,65 @@ class CliEndToEndTest {
         writeSingleToolSpec(spec, "Looks up a record.");
         writeConfig(config, spec);
 
-        Invocation result = invoke("scan", "--config", config.toString(), "--out", report.toString());
+        Invocation result = invoke("scan", "--config", config.toString(),
+                "--risk-only", "--out", report.toString());
 
         assertEquals(0, result.code(), result.out() + result.err());
         assertTrue(Files.isRegularFile(report), "--out 指定的文件没有被创建");
         assertTrue(Files.readString(report).contains("MCP 工具面扫描"), Files.readString(report));
+    }
+
+    /**
+     * SARIF 写不出来时必须非零退出。
+     *
+     * <p>SARIF 是 CI 真正消费的产物：写失败意味着这次扫描的结果永远不会出现在 PR 上。
+     * 旧版只往 stderr 打一行就继续，最后可能以 0 退出——"扫描通过"与"结果上传了"
+     * 被混成同一件事，而上游看到的是一片绿。
+     */
+    @Test
+    @Timeout(value = 180, unit = TimeUnit.SECONDS)
+    void sarifWriteFailureIsNotReportedAsSuccess(@TempDir Path dir) throws Exception {
+        Path config = dir.resolve("mcp.json");
+        Path spec = dir.resolve("server.json");
+        Path blocker = dir.resolve("blocker.txt");
+
+        writeSingleToolSpec(spec, "Looks up a record.");
+        writeConfig(config, spec);
+
+        // 让 SARIF 的目标路径落在一个普通文件"下面"——createDirectories 必然失败
+        Files.writeString(blocker, "not a directory");
+        Path unreachable = blocker.resolve("results.sarif");
+
+        Invocation result = invoke("scan", "--config", config.toString(), "--risk-only",
+                "--sarif", unreachable.toString());
+
+        assertEquals(6, result.code(), result.out() + result.err());
+        assertTrue(result.err().contains("写出 SARIF 失败"), result.err());
+        assertTrue(result.err().contains("::error::"), "失败要在 Actions 里以注解暴露：" + result.err());
+    }
+
+    /**
+     * 端到端确认 fail-closed：有服务器、有工具面，但基线读不到时仍然不给出"通过"。
+     *
+     * <p>这是这套门禁最容易被绕开的地方——不是被攻击者绕开，而是被一次操作失误绕开：
+     * 忘了拷 lock 文件、CI 缓存被清了、路径写错了。这些都不该表现为退出码 0。
+     */
+    @Test
+    @Timeout(value = 180, unit = TimeUnit.SECONDS)
+    void missingBaselineIsAnErrorEvenWithAReachableServer(@TempDir Path dir) throws Exception {
+        Path config = dir.resolve("mcp.json");
+        Path spec = dir.resolve("server.json");
+
+        writeSingleToolSpec(spec, "Looks up a record.");
+        writeConfig(config, spec);
+
+        Invocation result = invoke("scan", "--config", config.toString(),
+                "--baseline", dir.resolve("never-locked.json").toString());
+
+        assertEquals(5, result.code(), result.out() + result.err());
+        assertTrue(result.err().contains("找不到基线文件"), result.err());
+        // 报告里不能出现"未发现风险项"这种会让人以为跑完了的措辞
+        assertTrue(result.out().isBlank(), "基线不可用时不该输出一份看起来正常的报告：" + result.out());
     }
 
     /** 两个同名工具；第二个的 schema 由参数决定 */

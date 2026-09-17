@@ -91,6 +91,10 @@ public record Baseline(int version,
 
     public static Baseline read(Path file) throws IOException {
         JsonNode root = MAPPER.readTree(Files.readString(file, StandardCharsets.UTF_8));
+        if (root == null || !root.isObject()) {
+            throw new IOException("基线文件不是 JSON 对象。"
+                    + "这通常意味着文件被写坏或被别的工具覆盖。");
+        }
         int version = root.path("version").asInt(1);
         if (version < CURRENT_VERSION) {
             throw new IOException("基线格式过旧（v" + version + "，当前 v" + CURRENT_VERSION + "）。"
@@ -105,12 +109,30 @@ public record Baseline(int version,
                     + "请重新运行 `mcp-sentinel lock`（这不是攻击）。");
         }
 
-        List<ToolEntry> tools = new ArrayList<>();
+        // 内容完整性：能解析成 JSON 不等于能用。
+        // 一份 version 正确但 tools 缺失/为空的基线，会让「所有工具都是新增」或
+        // 「一切正常」这类结论建立在空数据集上——后者尤其危险：扫描通过，门禁形同虚设。
         JsonNode toolsNode = root.path("tools");
-        if (toolsNode.isArray()) {
-            for (JsonNode entry : toolsNode) {
-                tools.add(new ToolEntry(ToolDefinition.fromJson(entry), entry.path("fingerprint").asText("")));
+        if (!toolsNode.isArray()) {
+            throw new IOException("基线缺少 tools 数组（或类型不是数组）。"
+                    + "基线必须完整保存被锁定的工具定义，否则无法做漂移比对。");
+        }
+        List<ToolEntry> tools = new ArrayList<>();
+        for (JsonNode entry : toolsNode) {
+            if (!entry.isObject()) {
+                throw new IOException("基线 tools 中存在非对象条目：" + entry.getNodeType());
             }
+            String name = entry.path("name").asText("");
+            String fingerprint = entry.path("fingerprint").asText("");
+            if (name.isBlank()) {
+                throw new IOException("基线中有一个工具条目缺少 name 字段——"
+                        + "无法确定它是谁，比对结果不可信。");
+            }
+            if (fingerprint.isBlank()) {
+                throw new IOException("基线中工具 '" + name + "' 缺少 fingerprint 字段——"
+                        + "「未变更」这一结论正是靠它得出的，缺了它就无法判定。");
+            }
+            tools.add(new ToolEntry(ToolDefinition.fromJson(entry), fingerprint));
         }
         List<AcceptedChange> accepted = new ArrayList<>();
         JsonNode acceptedNode = root.path("acceptedChanges");
