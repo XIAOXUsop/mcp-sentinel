@@ -311,7 +311,7 @@ mcp-sentinel scan --config <配置> [选项]
 ## 构建与测试
 
 ```bash
-./mvnw verify      # 112 项测试
+./mvnw verify      # 117 项测试
 ```
 
 含**真实端到端用例**：起 MCP 服务器子进程 → 走 MCP 协议拉取工具面 → 检查退出码。
