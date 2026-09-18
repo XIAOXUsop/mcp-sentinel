@@ -363,13 +363,30 @@ public final class Main {
         List<Change> blocking = diff == null ? List.of() : diff.blocking(failOnChange);
         boolean hasFindings = report.hasAtLeast(failOn);
 
-        // 两条 ::error:: 都要发——旧版先判漂移就 return，风险项的注解会被吞掉
+        /*
+         * 注解报**实际分级**，不报阈值。
+         *
+         * 曾经这里写的是 `failOn` / `failOnChange`，也就是「达到 BREAKING 级别」
+         * 这种说法——那只是**阻断阈值**（默认值），不是这次变更的级别。
+         * 实测：悄悄改一条工具描述后，报告正文正确写出
+         * `[DANGEROUS] DESCRIPTION_CHANGED`，而 CI 注解说的是
+         * 「达到 BREAKING 级别」——把最严重的一档说低了一级。
+         *
+         * 对一个以「按 MCP 特有风险轴精确分级」为卖点的工具，注解低报会让人
+         * 按错误的严重度处置。阈值同时保留，因为「为什么被拦」也是读者要的信息。
+         */
         if (hasFindings) {
-            err.println("::error::存在达到 " + failOn + " 级别的风险项");
+            err.println("::error::存在风险项，最高 " + report.highestSeverity()
+                    + " 级别（阻断阈值 " + failOn + "）");
         }
         if (!blocking.isEmpty()) {
-            err.println("::error::MCP 工具面有 " + blocking.size() + " 处未批准的变更达到 "
-                    + failOnChange + " 级别（共 " + diff.totalChanges() + " 处变化）");
+            // ChangeSeverity 的顺序是 INFO < BREAKING < DANGEROUS，ordinal 越大越严重
+            ChangeSeverity worst = blocking.stream()
+                    .map(Change::severity)
+                    .max(Comparator.comparingInt(Enum::ordinal))
+                    .orElse(failOnChange);
+            err.println("::error::MCP 工具面有 " + blocking.size() + " 处未批准的变更，最高 "
+                    + worst + " 级别（共 " + diff.totalChanges() + " 处变化，阻断阈值 " + failOnChange + "）");
         }
         if (outputFailed) {
             err.println("::error::输出产物写入失败，本次扫描结果不完整（CI 拿不到报告/SARIF）");

@@ -36,6 +36,24 @@ public record ScanReport(String serverName,
         return findings.stream().anyMatch(f -> f.severity().ordinal() <= severity.ordinal());
     }
 
+    /**
+     * 本次扫描中**实际出现的**最高风险级别；没有发现时返回 {@code null}。
+     *
+     * <p>存在的理由：CI 注解曾经报的是**阻断阈值**而不是实际级别，
+     * 于是一次 HIGH 的发现、配上 {@code --fail-on MEDIUM}，注解会说成
+     * 「达到 MEDIUM 级别」——**低报**。对安全工具来说，注解与事实不符
+     * 会让读的人按错误的严重度处理。
+     *
+     * <p>注意 {@link Finding.Severity} 的声明顺序是 {@code HIGH, MEDIUM, LOW}，
+     * **ordinal 越小越严重**，所以这里取的是 {@code min} 而不是 {@code max}。
+     */
+    public Finding.Severity highestSeverity() {
+        return findings.stream()
+                .map(Finding::severity)
+                .min(Comparator.comparingInt(Finding.Severity::ordinal))
+                .orElse(null);
+    }
+
     public String shortFingerprint() {
         return ToolFingerprint.shortOf(surfaceFingerprint);
     }
