@@ -40,6 +40,26 @@
         -->
         <jackson.version>2.21.5</jackson.version>
         <junit.version>5.13.4</junit.version>
+        <!--
+          可复现构建：固定产物里每个条目的时间戳。
+
+          这个仓库把 jar 发到 GitHub Release。不固定的话，jar 里条目的时间就是
+          "构建那一刻"，同一份源码在任何两个时刻构建出的字节都不同——
+          「你下载到的这个 jar 是不是从这份源码构建出来的」就**无法用哈希回答**。
+
+          实测（2026-09-19，加这个属性之前）：`./mvnw clean package -DskipTests`
+          连做两次，产物大小相同（6098536 字节）但 sha256 不同：
+             75f7f1c8df94a55dd49e3ee307439ed8…
+             823472f009fd717d38e0158e2a206a8f…
+          加完之后两次完全相同（见 README 的「可复现构建」一节）。
+
+          配套的还有 `.mvn/wrapper/maven-wrapper.properties` 里钉住的 Maven 版本：
+          时间戳只是"同一台机器两次构建相同"的保证，**跨机器**还需要构建工具一致
+          （否则 `META-INF/MANIFEST.MF` 里的 `Created-By` 会不一样）。
+
+          代价：jar 里的时间戳不再反映真实构建时间。对可验证性是划算的。
+        -->
+        <project.build.outputTimestamp>2026-09-19T00:00:00Z</project.build.outputTimestamp>
     </properties>
 
     <dependencies>

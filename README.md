@@ -319,6 +319,28 @@ mcp-sentinel scan --config <配置> [选项]
 要构造的形态（重名工具、带换行的 server 名）用 SDK 起服务时跑不起来，
 而真实威胁模型里**服务器是不可信方**。
 
+### 可复现构建
+
+```bash
+./mvnw clean package -DskipTests   # 连做两次，产物 sha256 应当完全相同
+```
+
+这个 jar 是发到 GitHub Release 的，所以「你下载到的这个 jar 是不是从这份源码构建出来的」
+应当能被**哈希**回答，而不是只能靠信任。让这句话成立的是两件事：
+
+- **时间戳固定**（pom 里的 `project.build.outputTimestamp`）。不固定的话，jar 里每个
+  条目的时间就是"构建那一刻"，同一份源码在任何两个时刻构建出的字节都不同。
+  加之前实测：两次干净构建产物**大小相同（6098536 字节）但 sha256 不同**——
+  只看大小会以为没问题。
+- **构建工具钉住**（`.mvn/wrapper/maven-wrapper.properties` 里的 Maven 版本）。
+  时间戳只保证"同一台机器两次相同"，跨机器还需要构建工具一致——否则
+  `META-INF/MANIFEST.MF` 里的 `Created-By` 就不一样。这一条是同族仓库踩出来的：
+  `desensitize-spring-boot-starter` 在一台用系统 Maven 3.3.9 的机器上构建，
+  MANIFEST 写的是 `Created-By: Apache Maven 3.3.9` 还多一行
+  `Built-By: <构建机器的用户名>`，而 CI 构建的是 `Maven JAR Plugin 3.5.0`。
+
+代价是 jar 里的时间戳不再反映真实构建时间。对一个要被验证的产物来说，这是划算的。
+
 开发中由实测发现并修复的问题（均已补回归用例）：
 
 1. `format: "date"` 未被当作约束，误报正规的日期参数
