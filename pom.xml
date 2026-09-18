@@ -25,7 +25,20 @@
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <mcp.sdk.version>2.0.1</mcp.sdk.version>
-        <jackson.version>2.19.0</jackson.version>
+        <!--
+          2.21.5 而不是 2.19.0：Dependabot 在这个仓库上报了 5 条 jackson-databind 告警，
+          全部命中 2.19.0。逐条看下来要求的修复版本最高是 2.21.5：
+
+            CVE-2026-54512 (HIGH)   多态类型校验器绕过          修复 2.21.4
+            CVE-2026-54513 (HIGH)   数组子类型白名单绕过         修复 2.21.4
+            CVE-2026-54514 (MEDIUM) InetSocketAddress 触发即时 DNS 解析  修复 2.21.4
+            CVE-2026-59888 (MEDIUM) Record 上的 @JsonIgnore 被绕过      修复 2.21.4
+            CVE-2026-54515 (MEDIUM) 逐属性大小写不敏感的反序列化绕过     修复 2.21.5
+
+          取 2.21.5 = 修复线（最新的 2.21.6 也存在，但那不是任何一条的要求；
+          与 amlagent 那次给 log4j 取 2.25.4 而非 2.25.5 是同一种取舍）。
+        -->
+        <jackson.version>2.21.5</jackson.version>
         <junit.version>5.13.4</junit.version>
     </properties>
 
