@@ -82,6 +82,17 @@ public final class Main {
             return args.length == 0 ? EXIT_USAGE : EXIT_OK;
         }
         String command = args[0];
+        // 子命令先于一切 I/O 校验。
+        //
+        // 旧版把它放在读完配置、**连上服务器之后**的 switch 里，于是 `mcp-sentinel frobnicate
+        // --config mcp.json`（拼错了命令）会真的去执行配置里那条 command、真的拉起一个子进程，
+        // 然后因为握手失败退出 2「连接服务器失败」。两处都错：一个本地拼写错误变成了对外部
+        // 进程的调用，而退出码 2 会把人引到网络排查上去。配置里的命令来自不可信来源，
+        // 能不起就不起。
+        if (!"lock".equals(command) && !"scan".equals(command)) {
+            err.println("mcp-sentinel: 未知命令 '" + command + "'（可用：lock / scan）");
+            return EXIT_USAGE;
+        }
         Path config = null;
         Path baselineFile = Path.of("mcp-sentinel.lock.json");
         boolean baselineExplicit = false;
@@ -92,8 +103,14 @@ public final class Main {
         boolean acceptChanges = false;
         boolean riskOnly = false;
         java.time.Duration timeoutOverride = null;
+        // 显式出现过的选项。用来发现「给了但在这个子命令下没有对应行为」的选项——
+        // 静默忽略比报错更糟：使用者会以为它生效了。
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
 
         for (int i = 1; i < args.length; i++) {
+            if (args[i].startsWith("--")) {
+                seen.add(args[i]);
+            }
             switch (args[i]) {
                 case "--config" -> config = Path.of(require(args, ++i, err));
                 case "--baseline" -> {
@@ -159,6 +176,34 @@ public final class Main {
                     + "（显式给了基线文件，就应该做漂移检测）");
             return EXIT_USAGE;
         }
+        if (riskOnly && seen.contains("--fail-on-change")) {
+            err.println("mcp-sentinel: --risk-only 与 --fail-on-change 互斥"
+                    + "（前者不做漂移检测，而后者判的正是漂移）");
+            return EXIT_USAGE;
+        }
+
+        // lock 只做一件事：把当前工具面写成基线。它不评估风险、不做漂移比对、不产出报告。
+        // 这些选项因此没有对应行为，而**静默忽略**比报错更糟——脚本会以为产物已经落盘、
+        // 阈值已经生效。（`scan --out` 曾经就是这样被静默忽略的，见 CliEndToEndTest。）
+        if ("lock".equals(command)) {
+            if (seen.contains("--sarif")) {
+                err.println("mcp-sentinel: lock 不产出 SARIF——它只写基线，不跑扫描。"
+                        + "--sarif 属于 scan。");
+                return EXIT_USAGE;
+            }
+            if (seen.contains("--fail-on") || seen.contains("--fail-on-change")) {
+                err.println("mcp-sentinel: lock 不做风险判定也不做漂移比对，"
+                        + "所以 --fail-on / --fail-on-change 在它上面无效"
+                        + "（先 lock，阈值是 scan 时才用得上）。");
+                return EXIT_USAGE;
+            }
+            if (seen.contains("--baseline") && seen.contains("--out")) {
+                err.println("mcp-sentinel: lock 的输出位置只由一个选项决定，"
+                        + "同时给 --baseline 与 --out 会让前者被忽略、实际写的是 --out。"
+                        + "请只保留 --out。");
+                return EXIT_USAGE;
+            }
+        }
 
         ServerTarget target;
         try {
@@ -207,10 +252,10 @@ public final class Main {
             case "lock" -> doLock(surface, outFile == null ? baselineFile : outFile, out, err);
             case "scan" -> doScan(surface, config, baselineFile, baseline, outFile, sarifFile,
                     failOn, failOnChange, acceptChanges, riskOnly, out, err);
-            default -> {
-                err.println("mcp-sentinel: 未知命令 '" + command + "'（可用：lock / scan）");
-                yield EXIT_USAGE;
-            }
+            // 命令已在入口处校验过，走到这里说明加了新命令却漏了处理分支。
+            // 抛出去而不是静默返回一个用法错误——后者会伪装成"用户写错了命令"。
+            default -> throw new IllegalStateException(
+                    "命令 '" + command + "' 通过了入口校验却没有对应的处理分支");
         };
     }
 
@@ -256,17 +301,26 @@ public final class Main {
             // "改了别的东西"而失效。指纹含变更后的内容摘要，所以"批准后再悄悄改一次"
             // 会得到不同的指纹，仍然会拦下。
             List<Change> accepted = diff == null ? List.of() : diff.changes();
-            try {
-                Baseline before = baseline;
-                Baseline updated = Baseline.of(surface, mergeAccepted(baseline, diff));
-                updated.write(baselineFile);
-                out.println("已接受 " + accepted.size() + " 处变更并写回基线: "
-                        + baselineFile.toAbsolutePath());
-                printAcceptanceSummary(accepted, before, updated, findings, failOn, out);
-            } catch (IOException e) {
-                err.println("mcp-sentinel: 写回基线失败: " + e.getMessage());
-                return EXIT_USAGE;
+            Baseline before = baseline;
+            Baseline updated = Baseline.of(surface, mergeAccepted(baseline, diff));
+            // 没有实质变更时**不写文件**。写回会把 generatedAt 刷新一遍，于是 `git status`
+            // 出现一条改动、diff 里却只有一行时间戳——评审者看到一次"工具面好像变了"，
+            // 而实际上什么都没变。基线 diff 是这个工具唯一能被评审的东西，
+            // 让"没变"看起来像"变了"，和让"变了"看起来像"没变"一样是在破坏它。
+            boolean written = !updated.sameContentAs(before);
+            if (written) {
+                try {
+                    updated.write(baselineFile);
+                    out.println("已接受 " + accepted.size() + " 处变更并写回基线: "
+                            + baselineFile.toAbsolutePath());
+                } catch (IOException e) {
+                    err.println("mcp-sentinel: 写回基线失败: " + e.getMessage());
+                    return EXIT_USAGE;
+                }
+            } else {
+                out.println("没有需要批准的变更——工具面与基线一致，基线文件未改动。");
             }
+            printAcceptanceSummary(accepted, before, updated, findings, failOn, written, out);
             baseline = null;
             diff = null;
         }
@@ -382,7 +436,8 @@ public final class Main {
      */
     private static void printAcceptanceSummary(List<Change> accepted, Baseline before, Baseline after,
                                                List<Finding> findings,
-                                               Finding.Severity failOn, PrintStream out) {
+                                               Finding.Severity failOn, boolean written,
+                                               PrintStream out) {
         Map<String, String> previousFingerprints = new LinkedHashMap<>();
         for (Baseline.ToolEntry entry : before.tools()) {
             previousFingerprints.putIfAbsent(entry.tool().name(), entry.fingerprint());
@@ -391,7 +446,7 @@ public final class Main {
         out.println();
         out.println("本次批准的变更（写进基线的 acceptedChanges，后续提交里继续算已批准）：");
         if (accepted.isEmpty()) {
-            out.println("  （无——工具面与基线一致，这次批准只是把基线指纹刷新了一遍）");
+            out.println("  （无——工具面与基线一致，没有任何变更需要批准）");
         }
         Map<String, Integer> bySeverity = new TreeMap<>();
         for (Change change : accepted) {
@@ -408,8 +463,14 @@ public final class Main {
         out.println("  按级别统计: " + bySeverity);
 
         out.println();
-        out.println("工具面指纹 : " + shortFingerprint(before) + " → " + shortFingerprint(after));
-        out.println("基线文件   : " + after.generatedAt());
+        out.println("工具面指纹   : " + shortFingerprint(before) + " → " + shortFingerprint(after));
+        // 标签以前写的是"基线文件"，值却是时间戳——两者对不上，读者会以为那是个路径。
+        // 且只在真的写回时才报时间：没写回就没有新的写回时间可言。
+        if (written) {
+            out.println("基线写回时间 : " + after.generatedAt());
+        } else {
+            out.println("基线改动     : 无（工具面与基线一致，未写文件）");
+        }
 
         long blocking = findings.stream().filter(f -> f.severity().ordinal() <= failOn.ordinal()).count();
         out.println();
@@ -482,6 +543,12 @@ public final class Main {
                                            （INFO / BREAKING / DANGEROUS，默认 BREAKING）
                   --accept-changes         批准本次变更并写回基线（有意的迭代走这一步）
                   --timeout N              连接超时秒数（默认取配置里的 timeoutSeconds，否则 20）
+
+                哪些选项属于哪个子命令:
+                  --out 两者都有意义（lock 用它指定基线的输出位置）。
+                  --risk-only / --sarif / --fail-on / --fail-on-change / --accept-changes
+                  只属于 scan——lock 不扫描、不判风险、不比对漂移。写在 lock 上会报错，
+                  而不是被静默忽略：一个没生效的 --sarif 会让脚本以为报告已经落盘。
 
                 配置（与主流 MCP 客户端格式一致）:
                   { "server": "my-server", "command": "java", "args": ["-jar", "server.jar"] }

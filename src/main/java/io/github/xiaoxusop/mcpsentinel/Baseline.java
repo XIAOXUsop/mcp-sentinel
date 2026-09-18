@@ -149,6 +149,40 @@ public record Baseline(int version,
                 tools, accepted);
     }
 
+    /**
+     * 除 {@code generatedAt} 外，两份基线是否描述同一个工具面。
+     *
+     * <p><b>为什么需要它</b>：{@code --accept-changes} 在**没有变更可批准**时也会重写基线，
+     * 而重写会让 {@code generatedAt} 变一次——于是 {@code git status} 里出现一条改动，
+     * 但 diff 的内容是一行时间戳。评审者看到的是一次"工具面好像变了"，实际什么都没变。
+     * 这个工具的立身之本是「配置被改了」要像「代码被改了」一样出现在 diff 里；
+     * 反过来让「配置没变」看起来像变了，同样是在破坏这份契约。
+     *
+     * <p><b>为什么不直接用 record 的 equals</b>：{@link #of} 存的是**未经规范化**的原始定义，
+     * 而 {@link #read} 从文件读回的是**已规范化**的形态（写出去时过了
+     * {@link ToolDefinition#toJson()}）。两者描述同一个工具面，JsonNode 却不逐字节相等——
+     * 直接比会让"内容没变"永远判成"变了"，修复等于没做。所以比指纹与规范化文本。
+     */
+    public boolean sameContentAs(Baseline other) {
+        if (version != other.version
+                || schemaVersion != other.schemaVersion
+                || !java.util.Objects.equals(serverName, other.serverName)
+                || !java.util.Objects.equals(surfaceFingerprint, other.surfaceFingerprint)
+                || !acceptedChanges.equals(other.acceptedChanges)
+                || tools.size() != other.tools.size()) {
+            return false;
+        }
+        for (int i = 0; i < tools.size(); i++) {
+            ToolEntry mine = tools.get(i);
+            ToolEntry theirs = other.tools.get(i);
+            if (!mine.fingerprint().equals(theirs.fingerprint())
+                    || !mine.tool().canonicalForm().equals(theirs.tool().canonicalForm())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public void write(Path file) throws IOException {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("version", version);

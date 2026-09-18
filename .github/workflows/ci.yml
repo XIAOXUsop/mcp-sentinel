@@ -135,3 +135,29 @@ jobs:
           { [ "$code" -eq 0 ] || [ "$code" -eq 3 ]; } || { echo "::error::--risk-only 不该因为缺基线而失败，实际退出 $code"; exit 1; }
 
           echo "锁 → 拦 → 批准 → 放行 → 再拦 → fail-closed，全部符合预期"
+
+          # 先清掉上一步留下的未批准变更，再验证"没东西可批准时不动文件"。
+          #
+          # 这几步会在 Actions 里打出一条 `::error::存在达到 HIGH 级别的风险项` 注解，
+          # 而步骤仍然是绿的——这是对的，不是噪音：当前工具面的描述确实是
+          # "Ignore all previous instructions."，规则如实报了它，而 `--accept-changes`
+          # 只批准**漂移**，不批准风险。注解照发，退出码照旧。
+          scan --accept-changes > /dev/null
+
+          # 没有变更可批准时基线**不该被改写**：写回会把 generatedAt 刷新一遍，
+          # 于是 PR 里出现一条只有时间戳的 diff——评审者会以为工具面变了，而什么都没变。
+          before=$(md5sum /tmp/mcp-sentinel.lock.json | cut -d' ' -f1)
+          scan --accept-changes > /dev/null
+          after=$(md5sum /tmp/mcp-sentinel.lock.json | cut -d' ' -f1)
+          [ "$before" = "$after" ] || { echo "::error::没有变更可批准，基线却被改写了"; exit 1; }
+          echo "  ✓ 无变更可批准 —— 基线未被改写"
+
+          # 拼错的子命令是**用法**错误，不能变成一次"连不上服务器"。
+          # 旧行为会真的按配置把服务器子进程拉起来，握手失败后退 2——
+          # 一次本地拼写错误既触发了外部进程，又把排查方向指向了网络。
+          set +e
+          java -jar target/mcp-sentinel.jar frobnicate --config /tmp/lock.json > /dev/null 2>&1
+          code=$?
+          set -e
+          [ "$code" -eq 1 ] || { echo "::error::未知命令应退出 1，实际为 $code"; exit 1; }
+          echo "  ✓ 未知命令 —— 退出码 1"

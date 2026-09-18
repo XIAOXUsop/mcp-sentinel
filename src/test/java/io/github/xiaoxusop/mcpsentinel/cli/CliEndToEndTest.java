@@ -16,7 +16,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -201,6 +203,77 @@ class CliEndToEndTest {
         assertTrue(result.err().contains("找不到基线文件"), result.err());
         // 报告里不能出现"未发现风险项"这种会让人以为跑完了的措辞
         assertTrue(result.out().isBlank(), "基线不可用时不该输出一份看起来正常的报告：" + result.out());
+    }
+
+    /**
+     * 拼错子命令时，配置里那条命令**不能被启动**。
+     *
+     * <p>这不是洁癖：MCP 配置恰恰是本工具要审的对象，来源不可信。旧版把命令校验排在
+     * 连接之后，于是一次 {@code frobnicate} 的拼写错误会让配置里的 command 真的跑起来——
+     * 一个本地用法错误变成了对外部进程的调用，退出码还报成 2「连接服务器失败」，
+     * 把人引到网络排查上去。
+     */
+    @Test
+    @Timeout(value = 180, unit = TimeUnit.SECONDS)
+    void unknownCommandDoesNotStartTheConfiguredServer(@TempDir Path dir) throws Exception {
+        Path marker = dir.resolve("started.txt");
+        Path config = dir.resolve("mcp.json");
+
+        // 命令的唯一作用是留下痕迹——真被执行了就能被看见
+        boolean windows = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT)
+                .contains("win");
+        ObjectNode root = MAPPER.createObjectNode();
+        root.put("server", "probe");
+        root.put("command", windows ? "cmd" : "sh");
+        ArrayNode args = root.putArray("args");
+        if (windows) {
+            args.add("/c");
+            args.add("echo started > " + marker.toString().replace('\\', '/'));
+        } else {
+            args.add("-c");
+            args.add("echo started > " + marker);
+        }
+        Files.writeString(config, MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root));
+
+        Invocation result = invoke("frobnicate", "--config", config.toString());
+
+        assertEquals(1, result.code(), result.out() + result.err());
+        assertTrue(result.err().contains("未知命令"), result.err());
+        assertFalse(Files.exists(marker),
+                "配置里的命令被执行了——一次命令拼写错误不该触发外部进程");
+    }
+
+    /**
+     * 没有变更可批准时，基线文件**一个字节都不该动**。
+     *
+     * <p>旧版无条件重写基线，于是 {@code generatedAt} 被刷新一次——{@code git status} 里
+     * 多出一条改动，diff 的内容就是那一行时间戳。评审者看到的是"工具面好像变了"，
+     * 而实际什么都没变。基线 diff 是这个工具唯一能被评审的东西：让它因为"没变"而变化，
+     * 和让它因为变了却看不出来，破坏的是同一个契约。
+     */
+    @Test
+    @Timeout(value = 180, unit = TimeUnit.SECONDS)
+    void acceptingWithNothingToAcceptLeavesTheBaselineUntouched(@TempDir Path dir) throws Exception {
+        Path config = dir.resolve("mcp.json");
+        Path spec = dir.resolve("server.json");
+        Path baseline = dir.resolve("mcp-sentinel.lock.json");
+
+        writeSingleToolSpec(spec, "Looks up a record.");
+        writeConfig(config, spec);
+        assertEquals(0, invoke("lock", "--config", config.toString(),
+                "--out", baseline.toString()).code());
+
+        byte[] before = Files.readAllBytes(baseline);
+        // 跨过时间戳的精度边界，否则"改了但恰好相同"会让这条断言失去分辨力
+        Thread.sleep(50);
+
+        Invocation result = invoke("scan", "--config", config.toString(),
+                "--baseline", baseline.toString(), "--accept-changes");
+
+        assertEquals(0, result.code(), result.out() + result.err());
+        assertTrue(result.out().contains("没有需要批准的变更"), result.out());
+        assertArrayEquals(before, Files.readAllBytes(baseline),
+                "没有变更可批准时基线不该被改写");
     }
 
     /** 两个同名工具；第二个的 schema 由参数决定 */

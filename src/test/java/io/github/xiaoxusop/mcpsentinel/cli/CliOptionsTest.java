@@ -64,9 +64,64 @@ class CliOptionsTest {
     }
 
     @Test
-    void unknownOptionAndCommandAreUsageErrors() {
+    void unknownOptionIsAUsageError() {
         assertEquals(1, invoke("scan", "--bogus").code());
-        assertEquals(1, invoke("frobnicate", "--config", "x.json").code());
+    }
+
+    /**
+     * 未知子命令必须是**用法**错误，而不是"连接服务器失败"。
+     *
+     * <p>这条用例此前是假的：它写的是 {@code invoke("frobnicate", "--config", "x.json")}，
+     * 而 {@code x.json} 并不存在，于是拿到的 1 来自「读取配置失败」，与子命令校验毫无关系。
+     * 命令校验当时排在连接之后，真实行为是**先按配置把服务器子进程拉起来**，
+     * 握手失败后返回 2——这条断言永远看不到那一幕。
+     *
+     * <p>所以这里给一份**合法可读**的配置，并断言两点：退出码是 1，以及错误信息是
+     * 未知命令、不是连接失败。
+     */
+    @Test
+    void unknownCommandIsAUsageErrorNotAConnectionFailure(@TempDir Path dir) throws Exception {
+        Path file = config(dir, """
+                {"server": "s", "command": "definitely-not-a-real-command-xyz", "args": []}""");
+
+        Invocation result = invoke("frobnicate", "--config", file.toString());
+
+        assertEquals(1, result.code(), result.out() + result.err());
+        assertTrue(result.err().contains("未知命令"), result.err());
+        assertFalse(result.err().contains("连接服务器失败"),
+                "未知命令不该被翻译成连接失败：" + result.err());
+    }
+
+    /**
+     * {@code lock} 下这些选项没有对应行为，必须报错而不是静默忽略。
+     *
+     * <p>静默忽略比报错更糟：脚本以为 SARIF 已经落盘、以为阈值已经生效，而实际什么都没发生。
+     * {@code scan --out} 当初就是这样被吞掉的（见 {@code CliEndToEndTest}），
+     * 这一类缺陷值得逐条钉住。
+     */
+    @Test
+    void lockRejectsOptionsItCannotHonour(@TempDir Path dir) throws Exception {
+        Path file = config(dir, """
+                {"server": "s", "command": "definitely-not-a-real-command-xyz", "args": []}""");
+        String cfg = file.toString();
+        Path baseline = dir.resolve("b.json");
+
+        assertEquals(1, invoke("lock", "--config", cfg, "--sarif", "out.sarif").code());
+        assertEquals(1, invoke("lock", "--config", cfg, "--fail-on", "LOW").code());
+        assertEquals(1, invoke("lock", "--config", cfg, "--fail-on-change", "INFO").code());
+        // 两个都表示"写到哪"，同时给必然有一个被忽略
+        assertEquals(1, invoke("lock", "--config", cfg,
+                "--baseline", baseline.toString(), "--out", baseline.toString()).code());
+    }
+
+    /** 不做漂移检测，就没有"漂移到哪一级才拦"这回事 */
+    @Test
+    void riskOnlyRejectsFailOnChange(@TempDir Path dir) throws Exception {
+        Path file = config(dir, """
+                {"server": "s", "command": "definitely-not-a-real-command-xyz", "args": []}""");
+
+        assertEquals(1, invoke("scan", "--config", file.toString(),
+                "--risk-only", "--fail-on-change", "INFO").code());
     }
 
     @Test
