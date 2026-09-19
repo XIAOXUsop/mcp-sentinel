@@ -24,17 +24,20 @@ curl -LO https://github.com/XIAOXUsop/mcp-sentinel/releases/latest/download/mcp-
 java -jar mcp-sentinel.jar --help
 ```
 
-> ⚠️ **最新版（v0.5.2）的 jar 内嵌 jackson-databind 2.19.0，命中 5 条已知依赖告警**
-> （2 HIGH + 3 MEDIUM，其中有 `PolymorphicTypeValidator` 绕过）。修复在 master
-> （`b180618`，升到 2.21.5），**尚未发布**。2026-09-19 从 Release 下载产物核对过：
-> 解压后 `META-INF/maven/com.fasterxml.jackson.core/jackson-databind/pom.properties`
-> 里写的正是 `version=2.19.0`（jackson-core 同为 2.19.0）。
+> ✅ **v0.5.3 修掉了 v0.5.2 的两处问题**，下载最新版即可：
 >
-> 这个工具存在的意义就是查出**别人**依赖里的这类问题，所以它自己的产物更不能含糊——
-> **别把一个已知带洞的 jar 装进你的流水线**。要干净产物请从源码构建
-> （`./mvnw -B package`）。同一版还缺一个 CLI 修复：CI 注解报的是阻断阈值而非变更的
-> 实际分级（见下文第 18 条），修复 `3cb0eef` 同样晚于 v0.5.2。
-> **v0.5.2 落后 master 6 个提交**，下面「发版前的两道闸」就是为这件事加的。
+> | v0.5.2 的问题 | v0.5.3 |
+> |---|---|
+> | jar 内嵌 jackson-databind **2.19.0**，命中 5 条公告（2 HIGH，含 `PolymorphicTypeValidator` 绕过） | 内嵌 **2.21.5**（`b180618`）。解压产物核对过 `pom.properties` |
+> | CI 注解报的是**阻断阈值**而非变更的实际分级（报告正文写 `[DANGEROUS]`、注解说 `BREAKING`） | 已修（`3cb0eef`）——注解报实际分级，阈值另行标注 |
+>
+> v0.5.2 是「产物落后于 master」的实例：**它落后 6 个提交**，而 CI 当时全绿——它不查依赖。
+> 现在 `release.yml` 里有两道发版闸（依赖告警 + tag 是否落后且动了构建配置），
+> 这类情况不会再静默发出。详见下面「发版前的两道闸」。
+>
+> 这个工具存在的意义就是查出**别人**依赖里的这类问题，所以它自己的产物更不能含糊。
+> 如果你确实要用 v0.5.2：**别把它装进你的流水线**，或从源码构建
+> （`./mvnw -B package`）。
 
 ```bash
 # 首次：锁下当前工具面，把生成的 mcp-sentinel.lock.json 提交进版本库
@@ -370,10 +373,22 @@ mcp-sentinel scan --config <配置> [选项]
 
 两条设计约束：
 
-- **查不动 ≠ 通过。** HTTP 403/404（Dependabot 没开、`GITHUB_TOKEN` 缺
-  `security-events: read`）、响应不是数组、级别字段不认识、git 历史取不到——
+- **查不动 ≠ 通过。** HTTP 401/403/404、响应不是数组、级别字段不认识、git 历史取不到——
   一律拒绝发布。这些情况在日志里的表现和"没有告警"完全一样，把它们当成通过，
   就正好复刻了 v0.5.2 那次"看起来没问题"。
+  > ⚠️ **但「拒绝」要拒得对**：这条闸最初建在一个 Actions 的 `GITHUB_TOKEN`
+  > **够不到**的接口上。2026-09-20 在 ctxpress 上实测：
+  > `GITHUB_TOKEN` + `security-events: read` → **403 `Resource not accessible by integration`**；
+  > 匿名 → 401；本地 PAT → 200。也就是说 **Dependabot 告警接口只认 PAT / GitHub App token**
+  > （`security-events` 那个权限管的是 code scanning，不是 Dependabot）。
+  > 一道永远查不动、于是永远拒绝发布的闸，和没有闸是一回事——它只会被绕过。
+  >
+  > 所以 workflow 现在：**优先用 `secrets.PREFLIGHT_TOKEN`（PAT）**；
+  > 没配时给闸一加 `--alerts-optional`，降级为**大声告警后放行**。
+  > 降级**只覆盖"平台不让这个 token 查"**（401/403/404）——脚本自己的故障
+  > （状态码文件没写出来、响应不是数组、字段缺失、5xx）**一律照样拒绝**，
+  > 否则等于开了个「把检查弄坏就能绕过」的后门。真读到高危告警时，
+  > `--alerts-optional` 也管不着，照样拦。
 - **不依赖 OWASP dependency-check。** 它要 NVD 数据，没有 API key 时一次全量更新
   要跑几十分钟且频繁 429（姊妹项目 amlagent 的依赖扫描因此永远跑不完，
   而**常年红的门禁等于没有门禁**）。Dependabot 告警是 GitHub 侧算好的，
@@ -381,7 +396,9 @@ mcp-sentinel scan --config <配置> [选项]
 
 闸一和闸二各自有一组回归用例（`scripts/test_release_preflight.py`，CI 里跑）。
 反向验证过：拿掉「级别不认识 → 拒绝」、把 403 放行、拿掉「落后者动了构建配置 → 拒绝」
-三处守卫，分别会让 2 / 1 / 2 条用例变红。
+三处守卫，分别会让 2 / 1 / 2 条用例变红。降级开关另有 5 条用例，
+其中最要紧的一条是「真读到高危告警时 `--alerts-optional` 管不着」——
+否则这个开关就成了"把红变绿"的后门。
 
 Release 里还会附一份 `DEPENDENCIES.txt`（`mvn dependency:list` 的输出）：
 闸只认识**已知**的 CVE，一个还没进 Dependabot 库的问题它看不见；而使用者拿到一个 6MB
