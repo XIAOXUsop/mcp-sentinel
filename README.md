@@ -24,6 +24,18 @@ curl -LO https://github.com/XIAOXUsop/mcp-sentinel/releases/latest/download/mcp-
 java -jar mcp-sentinel.jar --help
 ```
 
+> ⚠️ **最新版（v0.5.2）的 jar 内嵌 jackson-databind 2.19.0，命中 5 条已知依赖告警**
+> （2 HIGH + 3 MEDIUM，其中有 `PolymorphicTypeValidator` 绕过）。修复在 master
+> （`b180618`，升到 2.21.5），**尚未发布**。2026-09-19 从 Release 下载产物核对过：
+> 解压后 `META-INF/maven/com.fasterxml.jackson.core/jackson-databind/pom.properties`
+> 里写的正是 `version=2.19.0`（jackson-core 同为 2.19.0）。
+>
+> 这个工具存在的意义就是查出**别人**依赖里的这类问题，所以它自己的产物更不能含糊——
+> **别把一个已知带洞的 jar 装进你的流水线**。要干净产物请从源码构建
+> （`./mvnw -B package`）。同一版还缺一个 CLI 修复：CI 注解报的是阻断阈值而非变更的
+> 实际分级（见下文第 18 条），修复 `3cb0eef` 同样晚于 v0.5.2。
+> **v0.5.2 落后 master 6 个提交**，下面「发版前的两道闸」就是为这件事加的。
+
 ```bash
 # 首次：锁下当前工具面，把生成的 mcp-sentinel.lock.json 提交进版本库
 java -jar mcp-sentinel.jar lock --config mcp.json
@@ -341,6 +353,41 @@ mcp-sentinel scan --config <配置> [选项]
 
 代价是 jar 里的时间戳不再反映真实构建时间。对一个要被验证的产物来说，这是划算的。
 
+### 发版前的两道闸
+
+打 tag 会触发 `.github/workflows/release.yml`，但**不是打了就一定发**——
+发之前 `scripts/release_preflight.py` 要过两道：
+
+| 闸 | 查什么 | 为什么单独一道不够 |
+|---|---|---|
+| 一 | 仓库里还有 `high`/`critical` 的开放依赖告警 → 拒绝 | 它查的是**默认分支当前**的依赖图 |
+| 二 | 这个 tag 落后默认分支，且落后的提交动过 `pom.xml`/`mvnw`/`gradle` 配置 → 拒绝 | 它保证"产物 = CI 在默认分支上验过的那份" |
+
+**两道都要，是因为 v0.5.2 恰好落在两道之间**：它的 jar 里是 jackson-databind 2.19.0，
+而 master 上早已升到 2.21.5——只查仓库告警的话，看到的是**干净的 master**，
+不是那个已经发出去的产物。闸二会把这个 tag 落下的 6 个提交逐条列出来，
+其中就有 `b180618 fix(deps): jackson-databind 2.19.0 -> 2.21.5`。
+
+两条设计约束：
+
+- **查不动 ≠ 通过。** HTTP 403/404（Dependabot 没开、`GITHUB_TOKEN` 缺
+  `security-events: read`）、响应不是数组、级别字段不认识、git 历史取不到——
+  一律拒绝发布。这些情况在日志里的表现和"没有告警"完全一样，把它们当成通过，
+  就正好复刻了 v0.5.2 那次"看起来没问题"。
+- **不依赖 OWASP dependency-check。** 它要 NVD 数据，没有 API key 时一次全量更新
+  要跑几十分钟且频繁 429（姊妹项目 amlagent 的依赖扫描因此永远跑不完，
+  而**常年红的门禁等于没有门禁**）。Dependabot 告警是 GitHub 侧算好的，
+  一个请求就能拿到，所以这道闸放在 release 而不是 CI——代价被限制成"这次先别发"。
+
+闸一和闸二各自有一组回归用例（`scripts/test_release_preflight.py`，CI 里跑）。
+反向验证过：拿掉「级别不认识 → 拒绝」、把 403 放行、拿掉「落后者动了构建配置 → 拒绝」
+三处守卫，分别会让 2 / 1 / 2 条用例变红。
+
+Release 里还会附一份 `DEPENDENCIES.txt`（`mvn dependency:list` 的输出）：
+闸只认识**已知**的 CVE，一个还没进 Dependabot 库的问题它看不见；而使用者拿到一个 6MB
+的 shaded jar 本来无从知道里面是什么版本——上面那条 jackson 版本就是解压 jar、
+读 `pom.properties` 才确认的。对比两个版本的这份清单，也正好是"这次升级动了什么"。
+
 开发中由实测发现并修复的问题（均已补回归用例）：
 
 1. `format: "date"` 未被当作约束，误报正规的日期参数
@@ -371,6 +418,11 @@ mcp-sentinel scan --config <配置> [选项]
     注解说 `BREAKING`。**低报**会让人按错误的严重度处置。
     之所以长期没被发现，是因为原有断言只查 stdout 的报告正文，
     而注解走 stderr——**两边从没被放进同一个断言里对比过**
+19. **发出去的产物带着已修的漏洞。** v0.5.2 的 jar 里 jackson-databind 是 2.19.0
+    （5 条告警，2 HIGH），而 master 上早已升到 2.21.5。**当时 CI 全绿**——
+    它根本不查依赖；而 Dependabot 告警是仓库级的，查的时候看到的是已经修好的 master。
+    干净的是 master，不是那个产物。修法是发版前加两道闸（见上文「发版前的两道闸」），
+    并且把 **403/404「查不动」也判为拒绝**——它和"没有告警"在日志里长得一样
 
 ## License
 

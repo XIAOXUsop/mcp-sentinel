@@ -195,3 +195,19 @@ jobs:
             exit 1
           fi
           echo "未检测到密钥/私钥泄露"
+
+  release-gate-selftest:
+    name: Release Gate Self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # 发版前的两道闸（scripts/release_preflight.py）决定一个 tag 能不能变成 Release，
+      # 它自己不能是没验过的。这组用例里的每一条都对应一次真实事故或一个真实的误读风险，
+      # 尤其是「查不动 ≠ 通过」那几条：闸一和闸二都可能查不动，而查不动的表现
+      # 和"没问题"完全一样——v0.5.2 就是在这个形态下把带 5 条告警的 jar 发了出去。
+      #
+      # 反向验证过：拿掉 `if unknown:`、把 403 放行、拿掉 `if risky:`
+      # 三处守卫分别会让 2 / 1 / 2 条用例变红。
+      - name: Test the release preflight gate
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
