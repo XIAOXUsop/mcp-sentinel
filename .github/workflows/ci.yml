@@ -29,8 +29,16 @@ jobs:
         run: |
           ./mvnw -B -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt -Dmdep.includeScope=test
           # classpath 要写进 JSON，而 Windows 的反斜杠不是合法 JSON 转义（\U ...）——
-          # 统一成正斜杠，这个脚本在 Windows 的 Git Bash 里也能直接跑
-          CP="target/test-classes:$(cat target/cp.txt | tr '\' '/')"
+          # 统一成正斜杠。
+          #
+          # ⚠️ 分隔符是**平台相关**的：Windows 用 `;`，其余用 `:`。原先写死 `:`，
+          # 于是"这个脚本在 Windows 的 Git Bash 里也能直接跑"那句注释是**不成立的**
+          # ——JVM 会把 `target/test-classes:C:/...` 切成 `target/test-classes` 与
+          # `C:/...` 两段，服务器类加载不到，报出来的是"连接服务器失败:
+          # Client failed to initialize"，看着像协议问题、其实是路径。
+          # CI 跑在 ubuntu 上，所以这个从来没见过光。
+          if [ "${OS:-}" = "Windows_NT" ]; then CP_SEP=';'; else CP_SEP=':'; fi
+          CP="target/test-classes${CP_SEP}$(cat target/cp.txt | tr '\' '/')"
 
           cat > /tmp/poisoned.json <<EOF
           {
@@ -54,8 +62,16 @@ jobs:
         run: |
           ./mvnw -B -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt -Dmdep.includeScope=test
           # classpath 要写进 JSON，而 Windows 的反斜杠不是合法 JSON 转义（\U ...）——
-          # 统一成正斜杠，这个脚本在 Windows 的 Git Bash 里也能直接跑
-          CP="target/test-classes:$(cat target/cp.txt | tr '\' '/')"
+          # 统一成正斜杠。
+          #
+          # ⚠️ 分隔符是**平台相关**的：Windows 用 `;`，其余用 `:`。原先写死 `:`，
+          # 于是"这个脚本在 Windows 的 Git Bash 里也能直接跑"那句注释是**不成立的**
+          # ——JVM 会把 `target/test-classes:C:/...` 切成 `target/test-classes` 与
+          # `C:/...` 两段，服务器类加载不到，报出来的是"连接服务器失败:
+          # Client failed to initialize"，看着像协议问题、其实是路径。
+          # CI 跑在 ubuntu 上，所以这个从来没见过光。
+          if [ "${OS:-}" = "Windows_NT" ]; then CP_SEP=';'; else CP_SEP=':'; fi
+          CP="target/test-classes${CP_SEP}$(cat target/cp.txt | tr '\' '/')"
 
           cat > /tmp/spec.json <<'EOF'
           { "serverName": "ci-lock-server",
