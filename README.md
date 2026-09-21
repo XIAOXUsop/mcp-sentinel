@@ -24,13 +24,28 @@ curl -LO https://github.com/XIAOXUsop/mcp-sentinel/releases/latest/download/mcp-
 java -jar mcp-sentinel.jar --help
 ```
 
-> ✅ **v0.5.4 修掉了 v0.5.3 的三处问题**，下载最新版即可：
+> ✅ **v0.5.5 修掉了 v0.5.4 的两处问题**，下载最新版即可：
+>
+> | v0.5.4 的问题 | v0.5.5 |
+> |---|---|
+> | **指纹变了却报「工具面与基线一致，无变化」，退出码 0。** 分级器只枚举它认识的那几类关键字，其余不产生 `Change`，而 `isClean()` 只看变更集是否为空——"认不出"被当成了"没变化"。实测四种改法（嵌套 object 里加参数、参数加 `const`、`items` 放宽类型、顶层加 `allOf`）**指纹全变了、变更集全是空的**：rug pull 的完整形态只要写进已有 object 参数的嵌套里就报绿 | 不变量钉死：指纹变了 ⇒ 至少一条变更，认不出就记一条 `UNGRADED_SCHEMA_CHANGE`（DANGEROUS），出口是人工核对后 `--accept-changes`（`42e2919`） |
+> | **不可见字符集有两份，漂开了。** `U+2066–U+2069`（双向隔离）在规则那份里没有，于是 `"Ig\u2066nore all previous instructions"` **退出码 0、零 finding**——既绕过「零宽/双向控制字符」这条规则，又拆开了 `HIDDEN_INSTRUCTION` 的关键词 | 字符集只剩一份（`TextNormalizer.INVISIBLE_CLASS`），补进 `U+2066–U+2069`、`U+00AD`、`U+061C`、`U+034F`；并加了一条逐字符比对两份定义的测试（`42e2919`） |
+>
+> 另有两条同批修掉的（`95785d8`）：**零参工具被 `SCHEMA_NO_PARAMETERS` 报成 HIGH 并阻断 CI**
+> （`list_allowed_directories` 这类标准形态因此退出 3；现在显式 `additionalProperties:false`
+> 一条不报，其余降为 MEDIUM），以及**基线不可用没有 `::error::` 注解**（fail-closed 是最重要的
+> 失败模式，却在 CI 注解里看不见）。
+>
+> ⚠️ **v0.5.5 会让一些原本静默通过的仓库第一次报红**——那正是它要修的东西：
+> 那些嵌套 schema 变更此前被报成「无变化」。出口是 `--accept-changes`。
+
+> ✅ **v0.5.4 修掉了 v0.5.3 的三处问题**：
 >
 > | v0.5.3 的问题 | v0.5.4 |
 > |---|---|
 > | 内嵌 `jackson-dataformat-yaml` 停在 **2.18.4**，与同一次打包里的 databind / core（2.21.5）差 3 个 minor | 四个 jackson 构件统一到 **2.21 线**（`fef2da1`）；CI 新增一步**解开打好的 jar** 逐个核对，而不是检查 pom——pom 写对了不等于包进去的就是那个版本 |
 > | 产物对外自称的版本号**漂了两版**：SARIF 里写 `0.2.0`、MCP 握手写 `0.5.1`，而 pom 早就是 0.5.3 | 版本号改成单一来源（pom 过滤进 `mcp-sentinel-version.properties`），并补了能问出这件事的 `--version`（`ff48373`） |
-> | 配置里写 `"transport": "sse"` 会被**静默当成 streamable-http 收下**，于是配置错误报成了「连接服务器失败」（退出码 2）——把人引去排查网络 | 显式拒收，并告诉使用者该写什么（`35e010b`） |
+> | 配置里写 `"transport": "sse"` 会被**静默当成 streamable-http 收下**，于是配置错误报成了「连接服务器失败」（退出码 2）——把人引去排查网络 | 显式拒收，并告诉使用者该写什么（`35e010b`）|
 >
 > **v0.5.3 当时修的是 v0.5.2 的两处**（jar 内嵌 jackson-databind 2.19.0 → 2.21.5，
 > 命中 5 条公告 2 HIGH；CI 注解报阻断阈值而非变更的实际分级），

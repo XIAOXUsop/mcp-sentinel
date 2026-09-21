@@ -6,7 +6,7 @@
 
     <groupId>io.github.xiaoxusop</groupId>
     <artifactId>mcp-sentinel</artifactId>
-    <version>0.5.4</version>
+    <version>0.5.5</version>
     <packaging>jar</packaging>
 
     <name>mcp-sentinel</name>
