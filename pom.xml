@@ -98,6 +98,30 @@
             <version>${jackson.version}</version>
         </dependency>
 
+        <!--
+          传递依赖里的 jackson-dataformat-yaml 也要拉到**同一条修复线**。
+
+          它来自 `io.modelcontextprotocol.sdk:mcp-json-jackson2` → `jackson-dataformat-yaml:2.18.4`
+          ——也就是打出来的 shaded jar 里，databind/core 是 2.21.5 而 yaml 那条还是 2.18.4。
+          翻遍 README 与 pom 都看不到这件事：两处写的都是「内嵌 jackson-databind 2.21.5」，
+          而按那句话去核对的人会看到 databind 对了就停下。
+
+          实测（2026-09-22，解 shaded jar 看各构件的 pom.properties）：
+
+              jackson-databind          2.21.5
+              jackson-core              2.21.5
+              jackson-annotations       2.21     ← 这个构件本来就是两段式版本号，2.21 即最新
+              jackson-dataformat-yaml   2.18.4   ← 与上面几条差 3 个 minor
+
+          取 2.21.5 而不是最新的 2.22.2：这个仓库一以贯之的原则是**取修复线，不是最新版**
+          （见上面那段 5 条 CVE 的注释）。这里只是让同一次打包里的 jackson 构件落在同一条线上。
+        -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>

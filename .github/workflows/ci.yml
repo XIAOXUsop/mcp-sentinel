@@ -23,6 +23,56 @@ jobs:
       - name: Build and test
         run: ./mvnw -B verify
 
+      # 打出来的 shaded jar 里，各 jackson 构件必须落在**同一条 minor 线上**。
+      #
+      # 这件事此前没有任何东西看着，于是 2026-09-22 实测出来是这样：
+      #
+      #     jackson-databind          2.21.5   ← README 与 pom 都写着这个数
+      #     jackson-core              2.21.5
+      #     jackson-annotations       2.21     ← 这个构件本来就是两段式版本号
+      #     jackson-dataformat-yaml   2.18.4   ← 差 3 个 minor，README 与 pom 都没提
+      #
+      # 它是 `mcp-json-jackson2` 的传递依赖，不显式拉一把就会一直停在旧线上。
+      # 而按 README 那句话去核对的人，看到 databind 对了就会停下——
+      # "产物里有没有含糊的地方"正是这个工具存在的理由，它自己的产物更不能含糊。
+      - name: 断言 shaded jar 里的 jackson 构件在同一条 minor 线上
+        run: |
+          python3 - <<'PY'
+          import re, sys, zipfile
+
+          z = zipfile.ZipFile('target/mcp-sentinel.jar')
+          found = {}
+          for name in z.namelist():
+              if not name.endswith('pom.properties'):
+                  continue
+              text = z.read(name).decode('utf-8', 'replace')
+              a = re.search(r'artifactId=(\S+)', text)
+              v = re.search(r'version=(\S+)', text)
+              if a and v and a.group(1).startswith('jackson-'):
+                  found[a.group(1)] = v.group(1)
+
+          # **空集不算通过**：一个都没扫到，说明打包结构变了，这条检查失效了
+          if not found:
+              sys.exit('没有从 shaded jar 里扫到任何 jackson 构件——这条检查没在测东西')
+
+          lines = {}
+          for artifact, version in sorted(found.items()):
+              parts = version.split('.')
+              minor = '.'.join(parts[:2])   # 2.21.5 -> 2.21；2.21 -> 2.21
+              lines.setdefault(minor, []).append('%s %s' % (artifact, version))
+
+          print('shaded jar 里的 jackson 构件：')
+          for artifact, version in sorted(found.items()):
+              print('  %-30s %s' % (artifact, version))
+
+          if len(lines) != 1:
+              print('不是同一条 minor 线：')
+              for minor, members in lines.items():
+                  print('  %s: %s' % (minor, ', '.join(members)))
+              sys.exit(1)
+          print('同一条线：%s' % next(iter(lines)))
+          PY
+
       # 端到端冒烟：真起 MCP 服务器子进程、真走协议、真读退出码。
       # 退出码是这个工具被集成进流水线时唯一被消费的东西，值得单独验一遍。
       - name: Smoke-test the scanner against a real MCP server

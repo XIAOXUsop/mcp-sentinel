@@ -39,6 +39,24 @@ java -jar mcp-sentinel.jar --help
 > 如果你确实要用 v0.5.2：**别把它装进你的流水线**，或从源码构建
 > （`./mvnw -B package`）。
 
+> **还有一处当时没发现的（2026-09-22 补）：v0.5.3 里的 jackson 构件不在同一条线上。**
+> 解 shaded jar 看各构件的 `pom.properties`：
+>
+> ```
+> jackson-databind          2.21.5
+> jackson-core              2.21.5
+> jackson-annotations       2.21     ← 这个构件本来就是两段式版本号
+> jackson-dataformat-yaml   2.18.4   ← 差 3 个 minor
+> ```
+>
+> `jackson-dataformat-yaml` 是 `mcp-json-jackson2` 的传递依赖，不显式拉一把就会一直停在旧线上。
+> **而上面那张表和 pom 的注释写的都是「内嵌 jackson-databind 2.21.5」**——
+> 按那句话去核对的人，看到 databind 对了就会停下。这正是"看起来没问题"。
+>
+> 现在它在 master 上被显式拉到同一个 `${jackson.version}`（顺带把 snakeyaml 从 2.3 带到 2.5），
+> 四个 jackson 构件统一在 **2.21** 线；并加了一道 CI 步骤**直接检查打出来的 jar**，
+> 而不是检查 pom——pom 写对了不等于包进去的就是那个版本。
+
 ```bash
 # 首次：锁下当前工具面，把生成的 mcp-sentinel.lock.json 提交进版本库
 java -jar mcp-sentinel.jar lock --config mcp.json
