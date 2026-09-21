@@ -160,7 +160,14 @@ Cisco 的 `mcpcontract` 规则文件里逐字写着
 ```
 mcp-sentinel lock --config <配置> [--out <基线文件>]
 mcp-sentinel scan --config <配置> [选项]
+mcp-sentinel --version
 ```
+
+> `--version`（或 `-V`）打印**这个产物自带的版本号**，以 0 退出。
+> 它存在的理由值得写下来：版本号原先在两处手写死（SARIF 的 `driver.version` 是 `0.2.0`、
+> MCP 握手的 `clientInfo` 是 `0.5.1`，而 pom 早就是 `0.5.3`），**漂了两个版本没人发现**
+> ——因为没有一条命令能问出"这个 jar 是哪一版"。现在版本只有一个来源
+> （pom 的 `<version>` 经资源过滤进来），`--version` 是它的出口，也是能端到端验的那一步。
 
 | 选项 | 说明 |
 |---|---|
@@ -326,7 +333,7 @@ mcp-sentinel scan --config <配置> [选项]
 ## 构建与测试
 
 ```bash
-./mvnw verify      # 117 项测试
+./mvnw verify      # 119 项测试
 ```
 
 含**真实端到端用例**：起 MCP 服务器子进程 → 走 MCP 协议拉取工具面 → 检查退出码。

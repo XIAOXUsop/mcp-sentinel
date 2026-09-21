@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import io.github.xiaoxusop.mcpsentinel.Version;
 
 /**
  * 通过 MCP 协议连到服务器，把工具面拉下来。
@@ -78,7 +79,8 @@ public final class McpConnector {
 
         try (McpSyncClient client = McpClient
                 .sync(transport)
-                .clientInfo(new McpSchema.Implementation("mcp-sentinel", "0.5.1"))
+                // 版本从 pom 过滤进来，不再手写——见 Version 的注释
+                .clientInfo(new McpSchema.Implementation("mcp-sentinel", Version.value()))
                 .requestTimeout(target.timeout() == null ? REQUEST_TIMEOUT : target.timeout())
                 .build()) {
 

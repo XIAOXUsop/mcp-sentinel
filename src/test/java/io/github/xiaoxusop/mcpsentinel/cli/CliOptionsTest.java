@@ -1,5 +1,6 @@
 package io.github.xiaoxusop.mcpsentinel.cli;
 
+import io.github.xiaoxusop.mcpsentinel.Version;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -22,6 +23,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 唯一的验证是 CI 里那句 shell 冒烟（只覆盖了 scan 返回 3 这一种情况）。
  */
 class CliOptionsTest {
+
+    /**
+     * 产物必须能说出自己是谁。
+     *
+     * <p>这条不只是"多了个开关"：版本号曾经在**两处手写死**（SARIF 自称 `0.2.0`、
+     * MCP 握手自称 `0.5.1`，而 pom 是 `0.5.3`），而**没有任何一条命令能问出
+     * "这个 jar 是哪一版"**——所以那两处错了也无从暴露，漂了两个版本没人发现。
+     */
+    @Test
+    void versionFlagPrintsTheBuildVersion() {
+        for (String flag : new String[] {"--version", "-V"}) {
+            Invocation result = invoke(flag);
+            assertEquals(0, result.code(), flag + " 应当以 0 退出");
+            assertFalse(result.out().isBlank(), flag + " 应当往 stdout 打印版本");
+            assertTrue(result.out().contains(Version.value()),
+                    flag + " 打印的版本应当与 Version.value() 一致，实际：" + result.out());
+            assertFalse(result.out().contains(Version.UNKNOWN),
+                    "版本资源没被过滤进产物（拿到的是 " + Version.UNKNOWN + "）：" + result.out());
+        }
+    }
 
     private record Invocation(int code, String out, String err) {
     }

@@ -13,6 +13,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -26,6 +27,31 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class SarifWriterTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /**
+     * 版本号必须来自构建，不能是代码里手写的字面量。
+     *
+     * <p>这个断言挡的是一类**真发生过**的事故：`driver.version` 原先写死成
+     * `"0.2.0"`、MCP 握手里的 `clientInfo` 写死成 `"0.5.1"`，而 pom 早就是
+     * `0.5.3` 了——也就是说一个 0.5.3 的产物对外自称是别的版本，两次升版都没人发现，
+     * 因为它既不进门禁也不进任何断言。SARIF 里那份还会进 code scanning 的记录。
+     *
+     * <p>现在版本号只有一个来源（pom 的 `<version>` 经资源过滤进
+     * `mcp-sentinel-version.properties`），这条断言盯住"只有一个来源"这件事。
+     */
+    @Test
+    void driverVersionComesFromTheBuildNotAHandWrittenLiteral() throws Exception {
+        String declared = Version.value();
+        assertNotEquals(Version.UNKNOWN, declared,
+                "版本资源没被过滤进产物——要么 pom 的 <resources> 过滤没生效，"
+                        + "要么打包时漏了 src/main/resources");
+
+        String inSarif = MAPPER.readTree(SarifWriter.render(report()))
+                .path("runs").path(0).path("tool").path("driver").path("version").asText();
+        assertEquals(declared, inSarif,
+                "SARIF 里的 driver.version 与 Version.value() 不一致——"
+                        + "多半是又有人把版本号手写死在了某个地方");
+    }
 
     private static ToolDefinition poisoned() throws Exception {
         return new ToolDefinition("format_helper",

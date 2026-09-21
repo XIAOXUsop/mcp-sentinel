@@ -6,6 +6,7 @@ import io.github.xiaoxusop.mcpsentinel.ChangeSeverity;
 import io.github.xiaoxusop.mcpsentinel.Finding;
 import io.github.xiaoxusop.mcpsentinel.SarifWriter;
 import io.github.xiaoxusop.mcpsentinel.ScanReport;
+import io.github.xiaoxusop.mcpsentinel.Version;
 import io.github.xiaoxusop.mcpsentinel.SurfaceDiff;
 import io.github.xiaoxusop.mcpsentinel.ToolFingerprint;
 import io.github.xiaoxusop.mcpsentinel.ToolSurface;
@@ -77,6 +78,17 @@ public final class Main {
     }
 
     static int run(String[] args, PrintStream out, PrintStream err) {
+        /*
+         * `--version` / `-V`：产物必须能说出自己是谁。
+         *
+         * 加它是因为版本号曾经漂了两版没人发现——SARIF 自称 0.2.0、MCP 握手自称 0.5.1，
+         * 而 pom 是 0.5.3。根子上是手写死；但**没有任何一条命令能问出"这个 jar 是哪一版"**，
+         * 那两处错了也就无从暴露。现在版本只有一个来源（Version），这条命令是它的出口。
+         */
+        if (args.length > 0 && ("--version".equals(args[0]) || "-V".equals(args[0]))) {
+            out.println("mcp-sentinel " + Version.value());
+            return EXIT_OK;
+        }
         if (args.length == 0 || "--help".equals(args[0]) || "-h".equals(args[0])) {
             usage(err);
             return args.length == 0 ? EXIT_USAGE : EXIT_OK;
@@ -549,6 +561,7 @@ public final class Main {
                 用法:
                   mcp-sentinel lock --config <配置> [--out <基线文件>]
                   mcp-sentinel scan --config <配置> [选项]
+                  mcp-sentinel --version                     打印本产物自带的版本号
 
                 选项:
                   --baseline <文件>        基线的位置（默认 mcp-sentinel.lock.json）

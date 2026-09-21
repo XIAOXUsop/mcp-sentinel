@@ -108,6 +108,31 @@
 
     <build>
         <finalName>mcp-sentinel</finalName>
+
+        <!--
+          打开资源过滤：把 `${project.version}` 写进产物里那份版本说明。
+
+          ── 为什么非做不可 ────────────────────────────────────────────
+          版本号原先在**两个地方手写死**，而且都落后于 pom：
+
+            SarifWriter.java   driver.version = "0.2.0"   （pom 是 0.5.3）
+            McpConnector.java  clientInfo     = "0.5.1"
+
+          也就是说，一个 0.5.3 的产物对外自称是 0.2.0 / 0.5.1——SARIF 里那份
+          会进 code scanning 的告警记录，MCP 那份会发给握手对端。
+          两次升版（0.5.2 → 0.5.3）都漏了，因为它们既不进门禁也不进任何断言。
+
+          手写死的东西**必然**会漂。所以这里不是"记得同步"，而是让版本号只有一个来源：
+          pom 的 `<version>` 过滤进 `mcp-sentinel-version.properties`，
+          代码只从那里读（见 `Version.java`）。
+        -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
+
         <plugins>
             <!--
               把 LICENSE 打进 jar 的 META-INF。

@@ -111,7 +111,8 @@ public final class SarifWriter {
         ObjectNode driver = run.putObject("tool").putObject("driver");
         driver.put("name", "mcp-sentinel");
         driver.put("informationUri", "https://github.com/XIAOXUsop/mcp-sentinel");
-        driver.put("version", "0.2.0");
+        // 从 pom 过滤进来，不再手写——见 Version 的注释
+        driver.put("version", Version.value());
 
         // 先把要用的规则 id 收集齐（含漂移产生的那些），再声明——否则会出现
         // results 引用了 rules 里没有的 id
