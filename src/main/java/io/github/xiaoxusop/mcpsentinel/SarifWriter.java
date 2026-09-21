@@ -120,7 +120,19 @@ public final class SarifWriter {
         for (Finding finding : report.sortedFindings()) {
             declared.putIfAbsent(finding.ruleId(), sarifLevel(finding.severity()));
         }
+        // 工具面的增删会产出 TOOL_ADDED / TOOL_REMOVED，它们**不是 finding**：
+        // SurfaceDiff 单独拿着 added / removed 两个集合。原先只从 findings 与 changes 里
+        // 收集规则声明，于是这两条 finding 引用了**没有声明过的** ruleId——
+        // GitHub 对未声明规则的结果会当未知规则处理（不匹配 rule 过滤、不进规则列表）。
+        // 实测（2026-09-22）：一次"新增一个工具"的运行里，results 有 TOOL_ADDED，
+        // driver.rules 里没有它。
         if (report.diff() != null) {
+            for (String added : report.diff().added()) {
+                declared.putIfAbsent("TOOL_ADDED", "warning");
+            }
+            for (String removed : report.diff().removed()) {
+                declared.putIfAbsent("TOOL_REMOVED", "warning");
+            }
             for (Change change : report.diff().changes()) {
                 declared.putIfAbsent(change.id(), sarifLevel(change.severity()));
             }
@@ -137,7 +149,13 @@ public final class SarifWriter {
             rule.putObject("fullDescription").put("text", RULE_SUMMARY.getOrDefault(ruleId, ruleId));
             rule.put("helpUri", HELP_BASE + ruleId);
             rule.putObject("defaultConfiguration").put("level", level);
-            rule.putObject("properties").put("tags", "security").put("precision", "high");
+            // `tags` 在 SARIF 的 property-bag 里必须是**字符串数组**。
+            // 原先写成裸字符串 "security"——实测（2026-09-22，官方 schema 校验）报
+            // `expected array, but got string`。和上面 logicalLocations 一样，
+            // 每一次非空运行都带着这条错误。
+            ObjectNode ruleProperties = rule.putObject("properties");
+            ruleProperties.putArray("tags").add("security");
+            ruleProperties.put("precision", "high");
         });
 
         ArrayNode results = run.putArray("results");
@@ -188,11 +206,20 @@ public final class SarifWriter {
      */
     private static void locate(ObjectNode result, Source source, String toolName, int occurrence,
                                ScanReport report, String ruleId) {
-        ObjectNode physical = result.putArray("locations").addObject().putObject("physicalLocation");
+        ObjectNode location = result.putArray("locations").addObject();
+        ObjectNode physical = location.putObject("physicalLocation");
         physical.putObject("artifactLocation").put("uri", source.uri());
-        physical.putObject("region").put("startLine", source.lineOf(toolName, occurrence));
+        int line = source.lineOf(toolName, occurrence);
+        physical.putObject("region").put("startLine", line);
 
-        ObjectNode logical = result.putArray("logicalLocations").addObject();
+        // logicalLocations 必须挂在 locations 的元素底下。
+        //
+        // 挂在 result 上是**不符合 SARIF 2.1.0 schema 的**：result 的合法属性里没有
+        // logicalLocations，它在 result.location 与 result.locations[] 里。
+        // 实测（2026-09-22，官方 schema 校验）：修之前每一次非空运行都带着这条错误，
+        // 而 README 承诺的是"输出 SARIF 2.1.0"。一个自称合规、实际不合规的产物，
+        // 在 code scanning 那边会被整体拒收——比不输出更坏，因为看着像成功了。
+        ObjectNode logical = location.putArray("logicalLocations").addObject();
         logical.put("name", Sanitizer.forSarifText(
                 occurrence == 0 ? toolName : toolName + "#" + (occurrence + 1)));
         logical.put("fullyQualifiedName", "mcp://" + Sanitizer.forUriSegment(report.serverName())
@@ -204,9 +231,17 @@ public final class SarifWriter {
         properties.put("tool", Sanitizer.forSarifText(toolName));
         properties.put("surfaceFingerprint", report.shortFingerprint());
 
-        // 自己算，不要让上传工具去读文件——文件读不到它就每次新建一条 alert 而非更新
+        // 自己算，不要让上传工具去读文件——文件读不到它就每次新建一条 alert 而非更新。
+        //
+        // 两个键都要：`primaryLocationLineHash` 是官方 schema 里
+        // `partialFingerprints` 那个 patternProperties 的**唯一具名键**
+        // （`^primaryLocationLineHash$`），也是最常用的那种"行内容变了就是新告警"的语义。
+        // 键名带 `/` 的那个虽然也能过 schema（该对象的 additionalProperties 也是字符串），
+        // 但把行哈希挂在具名键上更省事：上传工具本来就认它。
+        String lineHash = fingerprint(ruleId, toolName, String.valueOf(line));
         result.putObject("partialFingerprints")
-                .put("mcp-sentinel/v1", fingerprint(ruleId, toolName, report.serverName()));
+                .put("primaryLocationLineHash", lineHash)
+                .put("mcpSentinelRuleTool", fingerprint(ruleId, toolName, report.serverName()));
     }
 
     /** 同一条规则命中同一个工具 → 同一个指纹，这样重跑是更新 alert 而不是新增 */

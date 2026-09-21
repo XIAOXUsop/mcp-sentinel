@@ -236,6 +236,58 @@ jobs:
           [ "$code" -eq 1 ] || { echo "::error::未知命令应退出 1，实际为 $code"; exit 1; }
           echo "  ✓ 未知命令 —— 退出码 1"
 
+          # ── SARIF 结构必须过得了**官方 schema** ────────────────────────────
+          #
+          # 为什么单独一步：单元测试里的断言全都在"取节点比内容"，而 `path()` 取不到
+          # 会返回 missing node、`.get(0)` 返回 null——**结构错位与内容缺失长得一样**。
+          # 于是 `result.logicalLocations`（该在 `result.locations[]` 底下）与
+          # `properties.tags` 写成裸字符串这两处，在测试全绿的情况下活了很久，
+          # 而 README 那句一直是"输出 SARIF 2.1.0"。
+          #
+          # 实测（2026-09-22）：修之前这个场景报 10 个 schema 错误；code scanning
+          # 对不合规产物的处理是**整体拒收**，也就是本地全绿、上传之后什么都没有。
+          #
+          # 校验器**先自检**（--selftest）：拿两份已知错位的样例确认它会报错。
+          # 一个只会说"通过"的校验器和没有校验器一样坏——这个仓库已经踩过好几次
+          # 「检查一直在跑、其实什么都没量到」。
+          # 场景刻意选成**同时有 finding 和漂移**——那样 locations / logicalLocations /
+          # properties / rules 四处结构都会被走到。
+          #
+          # 这里差点埋了个坑：直接拿上面那个刚锁定、无变更的工具面去扫，SARIF 里是
+          # **0 条结果**，而 0 条结果的文档百分之百能过 schema——校验通过了，什么都没验。
+          # 所以先加一个基线里没有的工具（TOOL_ADDED）再扫。
+          #
+          # 每一步的退出码都要收住：Actions 的 bash 带 `-e`，而这里有的步骤返回 3、4。
+          set +e
+          cat > /tmp/drift.json <<'EOF'
+          { "serverName": "ci-lock-server",
+            "tools": [ { "name": "lookup", "description": "Looks up a record.",
+                         "inputSchema": {"type":"object","properties":{"id":{"type":"string","pattern":"^[0-9]+$"}},
+                                         "required":["id"]} },
+                       { "name": "summarize", "description": "Summarizes a record.",
+                         "inputSchema": {"type":"object","properties":{"id":{"type":"string"}}} } ] }
+          EOF
+          cat > /tmp/drift-lock.json <<EOF
+          { "server": "ci-lock-server", "command": "java",
+            "args": ["-cp", "$CP", "io.github.xiaoxusop.mcpsentinel.RawMcpServer", "/tmp/drift.json"] }
+          EOF
+          java -jar target/mcp-sentinel.jar scan --config /tmp/drift-lock.json             --baseline /tmp/mcp-sentinel.lock.json --sarif /tmp/out.sarif > /dev/null
+          set -e
+
+          python3 -m pip install --quiet jsonschema
+          python3 scripts/check_sarif_schema.py --selftest
+          python3 scripts/check_sarif_schema.py /tmp/out.sarif
+
+          # 结果非空也是**必须断言**的：一份 0 条结果的 SARIF 百分之百能过 schema，
+          # 那样这条检查就变成了"证明文件中止"，什么都没守住。
+          python3 - <<'PY'
+          import io, json
+          doc = json.load(io.open("/tmp/out.sarif", encoding="utf-8"))
+          n = sum(len(r.get("results", [])) for r in doc.get("runs", []))
+          assert n > 0, "SARIF 里一条结果都没有——校验通过是空的"
+          print("  ✓ SARIF —— %d 条结果，0 个 schema 错误" % n)
+          PY
+
   secret-scan:
     name: Secret Scan
     runs-on: ubuntu-latest

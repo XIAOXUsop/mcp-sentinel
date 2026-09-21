@@ -124,13 +124,63 @@ class SarifWriterTest {
 
         boolean found = false;
         for (JsonNode result : results(root)) {
-            JsonNode logical = result.path("logicalLocations").get(0);
+            // logicalLocations 挂在 locations 的**元素**底下。挂在 result 上不符合
+            // SARIF 2.1.0：result 的合法属性里没有它。这条断言原先按错的位置取，
+            // 而 `path()` 找不到就返回 missing node、`.get(0)` 返回 null，
+            // 于是"取错位置"和"真的没有"在这条断言里长得一模一样——
+            // 文档说的那件事根本没有被验过（实测 2026-09-22，官方 schema 校验）。
+            JsonNode logical = result.path("locations").get(0).path("logicalLocations").get(0);
             if ("format_helper".equals(logical.path("name").asText())) {
                 assertEquals("mcp://demo/format_helper", logical.path("fullyQualifiedName").asText());
                 found = true;
             }
         }
         assertTrue(found, "应带着工具的语义标识：" + results(root));
+    }
+
+    /**
+     * 结果树必须**整体**过得了官方 SARIF 2.1.0 schema。
+     *
+     * <p>这条是补的，因为前面那些断言没有一条真的校验过结构：`path()` 取不到东西
+     * 返回 missing node，`.get(0)` 返回 null，于是**结构错位与内容缺失长得一模一样**。
+     * 实测（2026-09-22）：修之前每一次非空运行都带着两个 schema 错误——
+     * {@code result.logicalLocations}（该在 {@code result.locations[]} 底下）与
+     * {@code properties.tags} 写成了字符串（property bag 里必须是数组）。
+     * 而 README 承诺的是"输出 SARIF 2.1.0"。
+     *
+     * <p>离线校验，不引网络：只钉住**种类**（数组 / 对象 / 字符串）与几处已知的错位，
+     * 不假装自己是完整的 schema 引擎——完整校验在 CI 里用官方 schema 做。
+     */
+    @Test
+    void everyResultIsShapedLikeSarif() throws Exception {
+        JsonNode root = MAPPER.readTree(SarifWriter.render(report()));
+
+        for (JsonNode result : results(root)) {
+            String where = result.path("ruleId").asText();
+
+            assertTrue(result.path("logicalLocations").isMissingNode(),
+                    "logicalLocations 不能挂在 result 上（SARIF 2.1.0 里它在 locations[] 底下）：" + where);
+
+            JsonNode locations = result.path("locations");
+            assertTrue(locations.isArray() && !locations.isEmpty(), "每条结果都要有 locations：" + where);
+            JsonNode location = locations.get(0);
+            assertTrue(location.path("logicalLocations").isArray(),
+                    "logicalLocations 要挂在 locations 的元素底下：" + where);
+            assertTrue(location.path("physicalLocation").path("artifactLocation").path("uri").isTextual(),
+                    "要有 artifactLocation.uri：" + where);
+            assertTrue(location.path("physicalLocation").path("region").path("startLine").isInt(),
+                    "要有 region.startLine：" + where);
+
+            assertTrue(result.path("partialFingerprints").path("primaryLocationLineHash").isTextual(),
+                    "要有 primaryLocationLineHash——schema 里 partialFingerprints 唯一的具名键：" + where);
+        }
+
+        JsonNode rules = root.path("runs").get(0).path("tool").path("driver").path("rules");
+        assertFalse(rules.isEmpty(), "要有规则声明");
+        for (JsonNode rule : rules) {
+            assertTrue(rule.path("properties").path("tags").isArray(),
+                    "property bag 里的 tags 必须是数组：" + rule.path("id").asText());
+        }
     }
 
     /**
@@ -152,7 +202,7 @@ class SarifWriterTest {
     private static List<String> fingerprints(JsonNode root) {
         List<String> values = new ArrayList<>();
         for (JsonNode result : results(root)) {
-            String value = result.path("partialFingerprints").path("mcp-sentinel/v1").asText();
+            String value = result.path("partialFingerprints").path("primaryLocationLineHash").asText();
             assertFalse(value.isBlank(), "缺少指纹：" + result.path("ruleId").asText());
             values.add(value);
         }

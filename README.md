@@ -348,6 +348,15 @@ mcp-sentinel --version
 > 本仓库没有那个条件。能验证的是位置符合官方规则 GH1005（相对 URI 或 `file:` 方案、
 > 有 `startLine`）、`partialFingerprints` 齐备（否则每次运行新建 alert 而非更新）、
 > 以及每条结果的 `ruleIndex` 都指回已声明的规则。
+>
+> ⚠️ **"SARIF 2.1.0"这句此前只是自称。** 实测用官方 schema 校验（2026-09-22）：
+> 跑一个同时含风险 finding 与工具面漂移的扫描，输出报 **10 个 schema 错误**——
+> `logicalLocations` 挂在了 `result` 上（它在 `result.locations[]` 底下），
+> `properties.tags` 写成了裸字符串（property bag 里必须是数组）。
+> 一个自称合规、实际不合规的产物在 code scanning 那边会被**整体拒收**，
+> 而本地的测试全绿——因为那些断言用 `path()` 取节点，取不到就返回 missing node，
+> **结构错位与内容缺失长得一模一样**。现在修好了，同一个场景校验 **0 错误**，
+> 并加了一条 `everyResultIsShapedLikeSarif` 钉住这两处结构。
 
 ## 与现有工具的关系（以及我不假装的事）
 
@@ -414,8 +423,18 @@ mcp-sentinel --version
 ## 构建与测试
 
 ```bash
-./mvnw verify      # 127 项测试
+./mvnw verify      # 132 项测试
 ```
+
+**SARIF 结构校验（离线）：**
+
+```bash
+python scripts/check_sarif_schema.py target/sample.sarif   # 用官方 schema，需要 jsonschema
+```
+
+> **这个数字靠人记是不行的，所以这里也写清它的算法**：`mvnw verify` 输出的
+> `Tests run:` 总和。改过测试之后请照着新输出改这一行——
+> 实测（2026-09-22）它曾经停在 127，而当时已经是 131 项了。
 
 含**真实端到端用例**：起 MCP 服务器子进程 → 走 MCP 协议拉取工具面 → 检查退出码。
 端到端服务器用 `RawMcpServer`（手写的 JSON-RPC 回放器）而不是官方 SDK——
@@ -443,6 +462,13 @@ mcp-sentinel --version
   `Built-By: <构建机器的用户名>`，而 CI 构建的是 `Maven JAR Plugin 3.5.0`。
 
 代价是 jar 里的时间戳不再反映真实构建时间。对一个要被验证的产物来说，这是划算的。
+
+> ⚠️ **`./mvnw package`（不带 `clean`）不可复现，别拿它当验证步骤。**
+> shade 插件会把本项目自己的 `META-INF/LICENSE` 追加到已有的那份上
+> （`AppendingTransformer`，见 pom 里的注释），而**增量构建时那份已经在了**——
+> 于是同一份源码第二次构建出来的 jar 里 LICENSE 多了一份。
+> 干净构建两次完全相同，增量构建不是。
+> 上面这条命令之所以写 `clean`，就是为了这个；照抄时别把 `clean` 省掉。
 
 ### 发版前的两道闸
 
