@@ -241,6 +241,11 @@ class CliOptionsTest {
                     + " stderr=" + result.err());
             assertTrue(result.err().contains(item.expectedInMessage()),
                     item.label() + " 的诊断信息应说明原因，实际：" + result.err());
+            // fail-closed 是 README 用整节论证的"最重要的失败模式"，它也必须发 ::error::——
+            // 只打普通文本的话，CI 里按注解分流的人看不到它，而这正是这条缺陷的受害场景：
+            // "扫描通过"与"扫描真的做了漂移检测"被混成同一件事。
+            assertTrue(result.err().contains("::error::基线不可用"),
+                    item.label() + " 没发 ::error:: 注解，CI 上看不见。实际：" + result.err());
         }
     }
 

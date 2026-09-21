@@ -111,6 +111,35 @@ class RiskRulesTest {
         assertTrue(has(findings, "SCHEMA_NO_PARAMETERS"), findings.toString());
     }
 
+    /**
+     * **零参工具本身不是风险——"零参却敞开"才是。**
+     *
+     * <p>这条规则原先一律报 HIGH：一个 14 个工具的良构文件系统工具面因此
+     * HIGH=1、**退出码 3**（默认阈值下阻断），唯一那条落在 `list_allowed_directories`
+     * 这类零参工具上。而它自己写的理由（"调用方无法预知会被传入什么"）说的是**敞开**的 schema——
+     * 实测 `additionalProperties: false` 与 `true` 报得一模一样，
+     * 连 `type` 都不写的 `{}` 反倒一条都不报。**惩罚显式声明、放过隐式开放。**
+     *
+     * <p>现在显式关闭的零参 schema 一条都不报，其余降为 MEDIUM（不阻断默认阈值）。
+     */
+    @Test
+    void aPreciselyClosedZeroParameterToolIsNotARisk() {
+        var closed = rulesOf(tool("list_allowed_directories", "Lists the directories this server may access", """
+                {"type":"object","properties":{},"additionalProperties":false}"""));
+
+        assertFalse(has(closed, "SCHEMA_NO_PARAMETERS"),
+                "显式声明了不接受任何参数的零参工具不该被报：" + closed);
+        assertEquals(List.of(), closed, closed.toString());
+
+        // 敞开的那种仍然提示，但只是提示——默认阈值是 HIGH，它不该阻断 CI
+        var open = rulesOf(tool("list_allowed_directories", "Lists the directories this server may access", """
+                {"type":"object","properties":{}}"""));
+        assertTrue(has(open, "SCHEMA_NO_PARAMETERS"), open.toString());
+        assertEquals(Finding.Severity.MEDIUM, open.stream()
+                        .filter(f -> f.ruleId().equals("SCHEMA_NO_PARAMETERS")).findFirst().orElseThrow().severity(),
+                open.toString());
+    }
+
     @Test
     void detectsOpenAdditionalProperties() {
         var findings = rulesOf(tool("anything", "Does something", """

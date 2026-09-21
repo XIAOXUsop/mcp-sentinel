@@ -247,6 +247,15 @@ public final class Main {
         if ("scan".equals(command) && !riskOnly) {
             BaselineLoad loaded = loadBaseline(baselineFile, err);
             if (!loaded.ok()) {
+                // **这一行以前没有。** 基线不可用是 fail-closed，也是 README 用整节论证的
+                // "最重要的失败模式"——可它此前只打普通文本、不发 `::error::`，
+                // 于是 CI 里按注解分流的人看不到它（README 那句"四种情况会各自输出一行
+                // ::error::"当时其实是三种，少的就是这一条）。
+                //
+                // 之所以要紧：这条缺陷的受害场景正是"扫描通过"与"扫描真的做了漂移检测"
+                // 被混成同一件事——而这个仓库已经为同一个混淆栽过一次（README bug #14）。
+                err.println("::error::基线不可用，本次扫描给不出漂移结论"
+                        + "（fail-closed：不会降级成「没有漂移」，也不会自动重建基线）");
                 return EXIT_BASELINE;
             }
             baseline = loaded.baseline();

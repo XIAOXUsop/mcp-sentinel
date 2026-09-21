@@ -97,6 +97,17 @@ public final class RiskRules {
             "(?i)^(cursor|continuation_?token|next_?token|page|page_?size|per_?page|"
                     + "offset|limit|next|prev|previous|id|ids|sort|order|locale|lang|language|q)$");
 
+    /**
+     * schema 是否**显式声明了"不接受任何额外字段"**。
+     *
+     * <p>JSON Schema 里 `additionalProperties` 的缺省是**允许**——"没写"不等于"关着"，
+     * 所以这里要求它必须是布尔且为 `false`，而不是"没报错就算关"。
+     */
+    private static boolean isClosedObject(JsonNode schema) {
+        JsonNode additional = schema.path("additionalProperties");
+        return additional.isBoolean() && !additional.asBoolean();
+    }
+
     private RiskRules() {
     }
 
@@ -317,13 +328,34 @@ public final class RiskRules {
         List<Finding> findings = new ArrayList<>();
         JsonNode schema = tool.inputSchema();
 
-        if (tool.parameterNames().isEmpty() && !"object".equals(schema.path("type").asText(""))) {
-            return findings;
-        }
         if (tool.parameterNames().isEmpty()) {
-            findings.add(new Finding("SCHEMA_NO_PARAMETERS", Finding.Severity.HIGH, tool.name(),
-                    "工具声明了 object 类型的入参却没有任何属性："
-                            + "调用方无法预知会被传入什么，也无法对参数做校验",
+            // ── 零参工具：`list_allowed_directories` / `get_current_time` 这类是标准形态 ──
+            //
+            // 这里原先不分青红皂白地报 **HIGH**「声明了 object 类型却没有任何属性」。
+            // 实测（2026-09-22）：一个 14 个工具的、完全良构的文件系统工具面因此得到
+            // HIGH=1、**退出码 3**（默认阈值下阻断），唯一那条 HIGH 就落在零参工具上。
+            // 而 README 自己用整段论证过"会乱报的规则会让人把门禁关掉"。
+            //
+            // 更要紧的是它与自己写的理由不符——理由说"调用方无法预知会被传入什么"，
+            // 那说的是**敞开**的 schema，可实测四种写法报得完全一样：
+            //
+            //   {}                                             → 不报（连 type 都没有，前面就返回了）
+            //   {"type":"object"}                              → HIGH
+            //   {"type":"object","properties":{}}              → HIGH
+            //   {"type":"object","properties":{},"additionalProperties":true}   → HIGH
+            //   {"type":"object","properties":{},"additionalProperties":false}  → HIGH
+            //
+            // 最严的写法与最松的写法同罚、而完全没声明的反倒放过——**惩罚显式声明**。
+            //
+            // 现在：显式 `additionalProperties:false`（精确地"不接受任何参数"）一条都不报；
+            // 其余降为 MEDIUM——它是提示，不是判据，也不该在默认阈值下阻断 CI。
+            if (isClosedObject(schema)) {
+                return findings;
+            }
+            findings.add(new Finding("SCHEMA_NO_PARAMETERS", Finding.Severity.MEDIUM, tool.name(),
+                    "工具没有任何参数，schema 却没有把 additionalProperties 关掉："
+                            + "未声明的字段会被静默接受。若不打算接受参数，"
+                            + "写成 additionalProperties:false 即可消掉这条",
                     schema.toString()));
             return findings;
         }
