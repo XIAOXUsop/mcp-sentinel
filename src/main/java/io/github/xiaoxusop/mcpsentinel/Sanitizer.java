@@ -89,10 +89,10 @@ public final class Sanitizer {
         return c < 0x20
                 || (c >= 0x7F && c <= 0x9F)
                 || c == 0x2028 || c == 0x2029
-                || (c >= 0x202A && c <= 0x202E)
-                || (c >= 0x2066 && c <= 0x2069)
-                || (c >= 0x200B && c <= 0x200F)
-                || c == 0xFEFF;
+                // 零宽 / 双向控制符走**唯一那份定义**，不在这里另写一遍。
+                // 这里原先自己列了一份，与 RiskRules / TextNormalizer 那份不一致
+                // （它多收 U+2066–U+2069，少收 U+00AD 等）——两处漂开正是那个绕过的成因。
+                || TextNormalizer.isInvisibleChar(c);
     }
 
     /** 供 SARIF 文本字段使用：与报告同一套转义，只是限长更宽 */

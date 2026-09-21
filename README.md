@@ -149,7 +149,22 @@ Cisco 的 `mcpcontract` 规则文件里逐字写着
 `rationale: "Descriptions are informational only and don't affect functionality"`。
 那对 OpenAPI 文档是对的；对 MCP 是灾难性的。
 
-共 **26** 类变更，分 `危险 / 破坏兼容 / 信息` 三档，`--fail-on-change` 可调（默认 `BREAKING`）。
+共 **27** 类变更，分 `危险 / 破坏兼容 / 信息` 三档，`--fail-on-change` 可调（默认 `BREAKING`）。
+
+> **第 27 类叫 `UNGRADED_SCHEMA_CHANGE`，它是 2026-09-22 补的一条兜底。**
+> 分级器只枚举它认识的那几类关键字；没枚举到的改动原本**一条 `Change` 都不产生**，
+> 而 `isClean()` 只看变更集是否为空——于是"分级器认不出"被当成了"没有变化"：
+>
+> ```
+> 嵌套 object 里加一个参数        指纹变了 → 变更 0 条 → 「与基线一致」退出 0
+> 参数加 "const"                 指纹变了 → 变更 0 条 → 同上
+> items 从 integer 放宽成 string  指纹变了 → 变更 0 条 → 同上
+> 顶层加 allOf                    指纹变了 → 变更 0 条 → 同上
+> ```
+>
+> rug pull 的完整形态（"名字没变、参数多加一层"）只要写在已有 object 参数的嵌套里就报绿。
+> 现在不变量被钉死了：**指纹变了 ⇒ 至少一条变更**，认不出改了什么就按 DANGEROUS 记一条，
+> 出口是人工核对后 `--accept-changes`。宁可让人多看一眼，也不能说"一致"。
 
 ### 三、审批可以继承，而且**不会**被滥用
 

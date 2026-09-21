@@ -235,6 +235,64 @@ class FingerprintAndBaselineTest {
         assertEquals("get_balance", change.describe());
     }
 
+    /**
+     * **指纹变了，就绝不许报「无变化」。**
+     *
+     * <p>`SchemaDiff` 只枚举它认识的那几类变更（顶层 properties / required /
+     * additionalProperties 布尔 / 逐参数的 type / enum / 7 个约束 / description），
+     * 其余一律不产生 `Change`。而 `SurfaceDiff.isClean()` 只看 `changes.isEmpty()`——
+     * 于是"分级器没枚举到"与"没有变化"被混为一谈：报告写
+     * 「工具面与基线一致，无变化」，**退出码 0**。
+     *
+     * <p>实测（2026-09-22）：下面这四种改法**指纹都变了，而变更集都是空的**。
+     * rug pull 的完整形态（"名字没变、参数多加一层"）只要写在已有 object 参数的嵌套里，
+     * 扫描器就报绿——而"重名工具让漂移检测静默绕过"那条同族路径（README bug #4）早就修过了，
+     * 这条一直敞着。
+     *
+     * <p>修法是把不变量钉死：**指纹变了 ⇒ 至少一条变更**。认不出改了什么就按
+     * DANGEROUS 记一条 `UNGRADED_SCHEMA_CHANGE`，出口是人工核对后 `--accept-changes`——
+     * 宁可让人多看一眼，也不能说"一致"。
+     */
+    @Test
+    void aChangedFingerprintNeverReportsNoChanges(@TempDir Path dir) throws Exception {
+        record Mutation(String what, String before, String after) {
+        }
+        String base = """
+                {"type":"object","properties":{
+                   "path":{"type":"string"},
+                   "options":{"type":"object","properties":{"a":{"type":"string"}}}
+                }}""";
+        List<Mutation> mutations = List.of(
+                new Mutation("嵌套 object 里加参数",
+                        base,
+                        base.replace("\"a\":{\"type\":\"string\"}",
+                                "\"a\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"}")),
+                new Mutation("参数加 const",
+                        base,
+                        base.replace("\"path\":{\"type\":\"string\"}",
+                                "\"path\":{\"type\":\"string\",\"const\":\"only\"}")),
+                new Mutation("数组 items 放宽类型",
+                        "{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"integer\"}}}}",
+                        "{\"type\":\"object\",\"properties\":{\"ids\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}}}"),
+                new Mutation("顶层加 allOf",
+                        "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}}}",
+                        "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}},\"allOf\":[{\"required\":[\"a\"]}]}"));
+
+        for (Mutation m : mutations) {
+            Path file = dir.resolve("baseline-" + Math.abs(m.what().hashCode()) + ".json");
+            Baseline.of(ToolSurface.of("srv", List.of(tool("read_file", "Reads a file.", m.before()))))
+                    .write(file);
+            ToolSurface tampered = ToolSurface.of("srv",
+                    List.of(tool("read_file", "Reads a file.", m.after())));
+
+            SurfaceDiff diff = Baseline.read(file).diffAgainst(tampered);
+
+            assertFalse(diff.isClean(), "「" + m.what() + "」指纹变了却报「无变化」——" + diff.summary());
+            assertEquals("UNGRADED_SCHEMA_CHANGE", diff.changes().get(0).id(), diff.summary());
+            assertEquals(ChangeSeverity.DANGEROUS, diff.changes().get(0).severity(), diff.summary());
+        }
+    }
+
     @Test
     void detectsAddedAndRemovedTools(@TempDir Path dir) throws Exception {
         var kept = tool("keep", "Kept tool", "{\"type\":\"object\",\"properties\":{}}");

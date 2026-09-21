@@ -255,7 +255,37 @@ public record Baseline(int version,
                 }
                 ToolDefinition was = previous.get(i).tool();
                 if (!ToolFingerprint.of(now).equals(previous.get(i).fingerprint())) {
-                    changes.addAll(SchemaDiff.between(was, now, i));
+                    List<Change> graded = SchemaDiff.between(was, now, i);
+                    if (graded.isEmpty()) {
+                        // ── 指纹变了，分级器却一条都没枚举出来 ──────────────────
+                        //
+                        // 这时**绝不能当成"没有变化"**。`SurfaceDiff.isClean()` 只看
+                        // `changes.isEmpty()`，所以这里返回空列表 = 报告写
+                        // 「工具面与基线一致，无变化」+ 退出码 0 —— 一次真实的 rug pull
+                        // 就这么静默过去了。
+                        //
+                        // 实测（2026-09-22，`SchemaDiff.between` 直接调用）：
+                        //
+                        //   嵌套 object 里加一个参数        指纹变了 → 变更 0 条
+                        //   参数加 "const"                 指纹变了 → 变更 0 条
+                        //   items 从 integer 放宽成 string  指纹变了 → 变更 0 条
+                        //   顶层加 allOf                    指纹变了 → 变更 0 条
+                        //
+                        // 四种都是货真价实的攻击面变化。根因是分级器只枚举它认识的
+                        // 那几类（顶层 properties / required / additionalProperties 布尔 /
+                        // 逐参数的 type / enum / 7 个约束 / description），
+                        // 其余一律不产生 Change——**"没枚举到"与"没变化"被混为一谈了**。
+                        //
+                        // 所以这里补一条兜底，把不变量钉死：**指纹变了 ⇒ 至少一条变更**。
+                        // 级别取 DANGEROUS：我们连改的是什么都不知道，按最保守的处理，
+                        // 出口是 `--accept-changes`（人看过再批）。
+                        graded = List.of(new Change("UNGRADED_SCHEMA_CHANGE", entry.getKey(), i,
+                                ChangeSeverity.DANGEROUS,
+                                "schema 变了但分级器认不出改了哪一处（折叠、嵌套或本工具尚未覆盖的"
+                                        + "关键字）。按最保守处理，请人工核对后 --accept-changes",
+                                ToolFingerprint.of(now).substring(0, 16)));
+                    }
+                    changes.addAll(graded);
                 }
             }
         }

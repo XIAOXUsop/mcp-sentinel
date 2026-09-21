@@ -38,8 +38,18 @@ public final class RiskRules {
                     + "|you\\s+are\\s+now|new\\s+instructions?"
                     + "|system\\s*prompt|\\bprompt\\s*injection\\b)");
 
-    /** 零宽字符：用于把指令藏进肉眼看不见的位置 */
-    private static final Pattern INVISIBLE = Pattern.compile("[\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\uFEFF]");
+    /**
+     * 零宽与双向控制字符：用于把指令藏进肉眼看不见的位置。
+     *
+     * <p>字符集**引用 {@link TextNormalizer#INVISIBLE_CLASS} 那一份**，不在这里另写一遍。
+     * 这里原先写的是 `U+200B–U+200F / U+202A–U+202E / U+2060–U+2064 / U+FEFF`，
+     * 而 `Sanitizer` 另行把 `U+2066–U+2069` 当作不可见——两份清单漂开了。
+     * 后果是实测可复现的绕过：`"Ig\u2066nore all previous instructions"` 既不被这条规则报出，
+     * 也拆开了 `HIDDEN_INSTRUCTION` 的关键词，**退出码 0、零 finding**；
+     * 而 README 的规则表里逐字写着这条规则管「零宽 / **双向控制字符**」。
+     */
+    private static final Pattern INVISIBLE =
+            Pattern.compile("[" + io.github.xiaoxusop.mcpsentinel.TextNormalizer.INVISIBLE_CLASS + "]");
 
     /**
      * base64 串。

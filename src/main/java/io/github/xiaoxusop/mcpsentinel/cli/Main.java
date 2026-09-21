@@ -319,7 +319,18 @@ public final class Main {
             // 出现一条改动、diff 里却只有一行时间戳——评审者看到一次"工具面好像变了"，
             // 而实际上什么都没变。基线 diff 是这个工具唯一能被评审的东西，
             // 让"没变"看起来像"变了"，和让"变了"看起来像"没变"一样是在破坏它。
-            boolean written = !updated.sameContentAs(before);
+            //
+            // ⚠️ 写回的前提是**真的有一条变更被批准**，不是"文件内容看起来变了"：
+            // 这两个判据来自不同的地方（`accepted` 来自变更集，`sameContentAs` 来自指纹），
+            // 而分级器**会漏掉**它不认识的改动。实测（2026-09-22）：嵌套 schema 变更
+            // 与指纹不一致时，工具会一边打印「（无——工具面与基线一致，没有任何变更需要批准）」
+            // 一边把这**没被任何人批准**的工具面写进锁文件——评审者看到一条锁文件 diff，
+            // 而工具的措辞让他以为是噪音。那正好破坏了"审批可继承"这条卖点的证据链。
+            //
+            // 所以门槛取两者的交集；指纹变了却没有可批准的变更时（现在不该发生，
+            // 因为 `Baseline.diffAgainst` 会补一条 UNGRADED_SCHEMA_CHANGE），**拒绝写回**。
+            boolean contentChanged = !updated.sameContentAs(before);
+            boolean written = !accepted.isEmpty() && contentChanged;
             if (written) {
                 try {
                     updated.write(baselineFile);
@@ -329,6 +340,11 @@ public final class Main {
                     err.println("mcp-sentinel: 写回基线失败: " + e.getMessage());
                     return EXIT_USAGE;
                 }
+            } else if (contentChanged) {
+                err.println("mcp-sentinel: 工具面指纹变了，却没有任何一条变更可以被批准——"
+                        + "这不该发生（分级器至少会补一条 UNGRADED_SCHEMA_CHANGE）。"
+                        + "基线未改动；请重新运行 lock 建立新基线，或报告这个输入。");
+                return EXIT_USAGE;
             } else {
                 out.println("没有需要批准的变更——工具面与基线一致，基线文件未改动。");
             }
