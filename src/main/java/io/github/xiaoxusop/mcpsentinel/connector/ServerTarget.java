@@ -82,7 +82,26 @@ public record ServerTarget(String serverName, Transport transport, String comman
             String normalized = value.trim().toLowerCase(Locale.ROOT).replace('_', '-');
             return switch (normalized) {
                 case "stdio" -> STDIO;
-                case "streamable-http", "http", "sse" -> STREAMABLE_HTTP;
+                case "streamable-http", "http" -> STREAMABLE_HTTP;
+                /*
+                 * `sse` **不能**当成 streamable-http 的别名收下——它们不是一套协议。
+                 *
+                 * MCP 早期用的是 HTTP+SSE（一个 GET 建事件流、再 POST 到它给的端点），
+                 * 后来换成了 Streamable HTTP。两者握手方式不同，把 sse 当后者用，
+                 * 结果是对着一个 SSE-only 的服务器按 Streamable HTTP 发请求、握手失败，
+                 * 报出来是「连接服务器失败」（退出 2）——**把人引到网络排查上去**。
+                 *
+                 * 这正是本仓库修过的那个形状（见 README 的 bug #15：一个本地拼写错误
+                 * 不该变成对外部进程的调用 + 退出码 2）。所以这里显式拒收并说清原因。
+                 *
+                 * 顺带说明：SDK 里**有** `HttpClientSseClientTransport`，接进来是可行的，
+                 * 只是本项目目前只声明支持两种传输（README「两种传输」）。哪天真要支持，
+                 * 改这里 + 连接层 + README，而不是让它继续在这条分支上冒充。
+                 */
+                case "sse" -> throw new IOException(
+                        "transport 'sse' 是 MCP 早期的 HTTP+SSE 传输，与 streamable-http 不是一套协议，"
+                                + "本工具暂不支持。若你的服务器用的是 Streamable HTTP，请写 streamable-http；"
+                                + "若它确实只支持 SSE，请改用别的客户端或在服务器侧开启 Streamable HTTP。");
                 default -> throw new IOException("不支持的 transport：'" + value + "'（只支持 stdio 与 streamable-http）");
             };
         }

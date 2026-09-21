@@ -88,6 +88,18 @@ java -jar mcp-sentinel.jar scan --config mcp.json --accept-changes
 }
 ```
 
+> `transport` 只认两个值：`stdio`（缺省）与 `streamable-http`（可简写 `http`）。
+> **`sse` 会被明确拒收，退出 1，并说清它是什么。**
+>
+> 它不能被当成 `streamable-http` 的别名：MCP 早期的 HTTP+SSE 与后来的 Streamable HTTP
+> **不是一套协议**（握手方式不同）。把它当后者用，结果是对着一个 SSE-only 的服务器
+> 按 Streamable HTTP 发请求、握手失败，报出来是「连接服务器失败」加一行目标 URL，
+> **把人引到网络排查上去**，而真正的问题在配置里。
+>
+> 这条实测过（2026-09-22）：改之前 `"transport": "sse"` 得到退出 **2**；
+> 同一份配置换成 `websocket` 反而得到退出 **1** 与「不支持的 transport」。
+> **写得越像真的，报得越离谱。** 现在两者都退出 1。
+
 > **请求头里的密钥用 `${环境变量名}` 引用，不要写明文。** 配置文件要提交进版本库，
 > 而扫描器的输入恰恰是不可信的第三方配置——明文等于让"扫别人的服务器"顺手把自家令牌交出去。
 > 引用了不存在的变量会在连接前直接失败（退出 1，按配置错误处理），
@@ -359,7 +371,7 @@ mcp-sentinel --version
 ## 构建与测试
 
 ```bash
-./mvnw verify      # 121 项测试
+./mvnw verify      # 127 项测试
 ```
 
 含**真实端到端用例**：起 MCP 服务器子进程 → 走 MCP 协议拉取工具面 → 检查退出码。
