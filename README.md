@@ -114,7 +114,7 @@ Cisco 的 `mcpcontract` 规则文件里逐字写着
 `rationale: "Descriptions are informational only and don't affect functionality"`。
 那对 OpenAPI 文档是对的；对 MCP 是灾难性的。
 
-共 22 类变更，分 `危险 / 破坏兼容 / 信息` 三档，`--fail-on-change` 可调（默认 `BREAKING`）。
+共 **26** 类变更，分 `危险 / 破坏兼容 / 信息` 三档，`--fail-on-change` 可调（默认 `BREAKING`）。
 
 ### 三、审批可以继承，而且**不会**被滥用
 
@@ -137,16 +137,24 @@ Cisco 的 `mcpcontract` 规则文件里逐字写着
 | `DESCRIPTION_SCHEMA_MISMATCH` | HIGH | 描述自称只读，schema 却含写入语义参数 |
 | `SCHEMA_NO_PARAMETERS` | HIGH | 声明为 object 却没有任何属性 |
 | `DUPLICATE_TOOL_NAME` | HIGH | 工具名重复——以名字为键的存储会互相覆盖 |
-| `UNSAFE_SERVER_NAME` / `UNSAFE_TOOL_NAME` | HIGH | 名字含规范外的字符（可夹带换行与控制字符） |
+| `UNSAFE_SERVER_NAME` | HIGH | server 名含规范外的字符（可夹带换行与控制字符） |
+| `UNSAFE_TOOL_NAME` | HIGH | tool 名含规范外的字符（可夹带换行与控制字符） |
 | `CROSS_TOOL_INSTRUCTION` | HIGH | 一句话被拆到两个工具的描述里 |
 | `ENCODED_PAYLOAD` | MEDIUM | base64 串**解码后**是指令性措辞 |
 | `CROSS_TOOL_DIRECTIVE` | MEDIUM | 描述点名本工具面内的另一个工具 + 指令性措辞 |
+
 | `SCHEMA_OPEN_OBJECT` | MEDIUM | `additionalProperties: true` |
 | `DANGEROUS_PARAMETER` | MEDIUM | 参数名指向**执行面**（`command` / `exec` / `sql`） |
 | `TOOL_SHADOWING` | MEDIUM | 与既有工具名称相近且描述雷同 |
 | `SCHEMA_UNCONSTRAINED_STRING` | LOW | 字符串参数无取值约束（按工具聚合） |
 | `PARAMETER_REACHES_ACCESS_SURFACE` | LOW | 参数名指向**访问面**（`path` / `file` / `url`） |
 | `SCHEMA_NO_REQUIRED` | LOW | 多参数却无必填约束 |
+
+> **上面这张表有多少行、有多少条规则，由 `RuleInventoryTest` 对着代码数一遍钉住。**
+> 2026-09-22 之前这两个数是错的：规则表 **15 行而实现有 16 条**
+> （`UNSAFE_SERVER_NAME` 与 `UNSAFE_TOOL_NAME` 被并进了一行），
+> 变更类**写了 22 而实现有 26 类**。两处都是自洽的——表 15 行、正文也写 15——
+> 所以肉眼看不出来，只有去数代码才发现。
 
 **每条发现都给出"为什么有风险"而不只是"命中了规则"。** 安全告警必须可解释，
 否则使用者只会学会忽略它。
@@ -278,7 +286,7 @@ mcp-sentinel --version
 | | snyk/agent-scan | cisco/mcp-scanner | mcp-sentinel |
 |---|---|---|---|
 | 语言 | Python | Python | **Java** |
-| 检测引擎 | 15+ 类规则 + **云 API** | YARA + LLM + 行为分析 | 15 条确定性规则 |
+| 检测引擎 | 15+ 类规则 + **云 API** | YARA + LLM + 行为分析 | 16 条确定性规则 |
 | 扫描范围 | 全机器配置 / skills / MCP | tools / prompts / resources / 源码 / 依赖 | **仅工具定义** |
 | 运行方式 | 需上传组件信息到云 API | 需 LLM 与 VirusTotal Key | **完全离线** |
 | 工具面基线 / 漂移 | ❌ | ❌ | ✅ |
@@ -333,7 +341,7 @@ mcp-sentinel --version
 ## 构建与测试
 
 ```bash
-./mvnw verify      # 119 项测试
+./mvnw verify      # 121 项测试
 ```
 
 含**真实端到端用例**：起 MCP 服务器子进程 → 走 MCP 协议拉取工具面 → 检查退出码。
