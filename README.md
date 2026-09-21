@@ -24,23 +24,28 @@ curl -LO https://github.com/XIAOXUsop/mcp-sentinel/releases/latest/download/mcp-
 java -jar mcp-sentinel.jar --help
 ```
 
-> ✅ **v0.5.3 修掉了 v0.5.2 的两处问题**，下载最新版即可：
+> ✅ **v0.5.4 修掉了 v0.5.3 的三处问题**，下载最新版即可：
 >
-> | v0.5.2 的问题 | v0.5.3 |
+> | v0.5.3 的问题 | v0.5.4 |
 > |---|---|
-> | jar 内嵌 jackson-databind **2.19.0**，命中 5 条公告（2 HIGH，含 `PolymorphicTypeValidator` 绕过） | 内嵌 **2.21.5**（`b180618`）。解压产物核对过 `pom.properties` |
-> | CI 注解报的是**阻断阈值**而非变更的实际分级（报告正文写 `[DANGEROUS]`、注解说 `BREAKING`） | 已修（`3cb0eef`）——注解报实际分级，阈值另行标注 |
+> | 内嵌 `jackson-dataformat-yaml` 停在 **2.18.4**，与同一次打包里的 databind / core（2.21.5）差 3 个 minor | 四个 jackson 构件统一到 **2.21 线**（`fef2da1`）；CI 新增一步**解开打好的 jar** 逐个核对，而不是检查 pom——pom 写对了不等于包进去的就是那个版本 |
+> | 产物对外自称的版本号**漂了两版**：SARIF 里写 `0.2.0`、MCP 握手写 `0.5.1`，而 pom 早就是 0.5.3 | 版本号改成单一来源（pom 过滤进 `mcp-sentinel-version.properties`），并补了能问出这件事的 `--version`（`ff48373`） |
+> | 配置里写 `"transport": "sse"` 会被**静默当成 streamable-http 收下**，于是配置错误报成了「连接服务器失败」（退出码 2）——把人引去排查网络 | 显式拒收，并告诉使用者该写什么（`35e010b`） |
+>
+> **v0.5.3 当时修的是 v0.5.2 的两处**（jar 内嵌 jackson-databind 2.19.0 → 2.21.5，
+> 命中 5 条公告 2 HIGH；CI 注解报阻断阈值而非变更的实际分级），
+> 那两条在 0.5.3 里就是好的，本次没有回退。
 >
 > v0.5.2 是「产物落后于 master」的实例：**它落后 6 个提交**，而 CI 当时全绿——它不查依赖。
 > 现在 `release.yml` 里有两道发版闸（依赖告警 + tag 是否落后且动了构建配置），
 > 这类情况不会再静默发出。详见下面「发版前的两道闸」。
 >
 > 这个工具存在的意义就是查出**别人**依赖里的这类问题，所以它自己的产物更不能含糊。
-> 如果你确实要用 v0.5.2：**别把它装进你的流水线**，或从源码构建
+> 如果你确实要用更旧的版本：**别把它装进你的流水线**，或从源码构建
 > （`./mvnw -B package`）。
 
-> **还有一处当时没发现的（2026-09-22 补）：v0.5.3 里的 jackson 构件不在同一条线上。**
-> 解 shaded jar 看各构件的 `pom.properties`：
+> **v0.5.3 里那个 jackson 版本不一致是怎么发现的（2026-09-22，v0.5.4 已修）**
+> ——它不在任何门禁的覆盖范围内，是解 shaded jar 逐个读 `pom.properties` 才看出来的：
 >
 > ```
 > jackson-databind          2.21.5
@@ -53,7 +58,7 @@ java -jar mcp-sentinel.jar --help
 > **而上面那张表和 pom 的注释写的都是「内嵌 jackson-databind 2.21.5」**——
 > 按那句话去核对的人，看到 databind 对了就会停下。这正是"看起来没问题"。
 >
-> 现在它在 master 上被显式拉到同一个 `${jackson.version}`（顺带把 snakeyaml 从 2.3 带到 2.5），
+> v0.5.4 里它被显式拉到同一个 `${jackson.version}`（顺带把 snakeyaml 从 2.3 带到 2.5），
 > 四个 jackson 构件统一在 **2.21** 线；并加了一道 CI 步骤**直接检查打出来的 jar**，
 > 而不是检查 pom——pom 写对了不等于包进去的就是那个版本。
 
