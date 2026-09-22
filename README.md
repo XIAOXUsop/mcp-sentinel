@@ -24,7 +24,18 @@ curl -LO https://github.com/XIAOXUsop/mcp-sentinel/releases/latest/download/mcp-
 java -jar mcp-sentinel.jar --help
 ```
 
-> ✅ **v0.5.5 修掉了 v0.5.4 的两处问题**，下载最新版即可：
+> ✅ **v0.5.6 修掉了一处「自称合规、实际不合规」**，下载最新版即可：
+>
+> | v0.5.5 的问题 | v0.5.6 |
+> |---|---|
+> | **输出其实过不了官方 SARIF 2.1.0 schema。** 用官方 schema 校验一个同时含风险 finding 与工具面漂移的扫描：**9–10 个结构错误**——`logicalLocations` 挂在 `result` 上（它在 `result.locations[]` 底下），`properties.tags` 写成裸字符串（property bag 里必须是数组）。code scanning 对不合规产物的处理是**整体拒收**，也就是本地全绿、上传之后什么都没有 | 两处结构改正，`partialFingerprints` 用官方具名键 `primaryLocationLineHash`；同一个场景校验 **0 错误**；`TOOL_ADDED`/`TOOL_REMOVED` 补进 `driver.rules`（它们此前引用了未声明的规则） |
+>
+> 这个缺陷**不可能被原有的测试发现**：那些断言全在"取节点比内容"，
+> `path()` 取不到返回 missing node、`.get(0)` 返回 null，**结构错位与内容缺失长得一模一样**。
+> 现在随仓库带官方 schema 并提供 `scripts/check_sarif_schema.py`（**先自检**：
+> 拿两份已知错位的样例确认它会报错），CI 里也接上了这一步。
+
+> ✅ **v0.5.5 修掉了 v0.5.4 的两处问题**：
 >
 > | v0.5.4 的问题 | v0.5.5 |
 > |---|---|
