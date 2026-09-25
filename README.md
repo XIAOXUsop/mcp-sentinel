@@ -262,7 +262,9 @@ mcp-sentinel --version
 | `--fail-on LEVEL` | 风险规则在哪个级别阻断（默认 `HIGH`） |
 | `--fail-on-change LEVEL` | 工具面变更在哪个级别阻断（默认 `BREAKING`） |
 | `--accept-changes` | 批准本次变更并写回基线，并打印**审批摘要**（见下）。没有变更可批准时不改动文件 |
-| `--timeout N` | 连接超时秒数（默认取配置里的 `timeoutSeconds`，否则 20） |
+| `--timeout N` | 兼容旧用法：同时设置连接与请求超时秒数 |
+| `--connect-timeout N` | HTTP 建连超时秒数；也可在配置中写 `connectTimeoutSeconds` |
+| `--request-timeout N` | MCP 初始化与工具列表请求超时秒数；也可在配置中写 `requestTimeoutSeconds` |
 | `--help` | 用法 |
 
 两种传输共用同一套检测语义：规则、指纹、基线都不认识"传输"这个概念，
@@ -423,7 +425,7 @@ mcp-sentinel --version
   `command` / `args` / `env`）。与其假装支持，不如在这里说清楚。
 - **HTTP 传输不做 OAuth 授权流程。** 只发配置里写好的静态请求头（值可用 `${VAR}` 引用环境变量）。
   需要交互式授权的服务器，请先用别的工具取到令牌再注入环境变量。
-- **`--timeout` 在两种传输下含义不同**：stdio 是请求超时，HTTP 是**连接**超时。
+- **超时分开控制**：stdio 使用请求超时；HTTP 分别使用建连与请求超时。旧的 `--timeout` 和 `timeoutSeconds` 同时设置两者，显式的连接或请求超时覆盖对应值。超时导致扫描失败并返回连接错误，不能当成“无漂移”。
   远程服务器可能连得上但响应很慢——那种情况下表现为请求超时，不是退出码 2。
 - **基线存完整定义，文件会变大**（500 工具约 200–400KB）。这是语义分级能力的必要成本。
 - **规范化规则升级会造成一次全量假变更。** 基线里记了 `schemaVersion`，

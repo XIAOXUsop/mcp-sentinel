@@ -115,6 +115,8 @@ public final class Main {
         boolean acceptChanges = false;
         boolean riskOnly = false;
         java.time.Duration timeoutOverride = null;
+        java.time.Duration connectTimeoutOverride = null;
+        java.time.Duration requestTimeoutOverride = null;
         // 显式出现过的选项。用来发现「给了但在这个子命令下没有对应行为」的选项——
         // 静默忽略比报错更糟：使用者会以为它生效了。
         java.util.Set<String> seen = new java.util.LinkedHashSet<>();
@@ -141,6 +143,22 @@ public final class Main {
                     } catch (RuntimeException e) {
                         err.println("mcp-sentinel: --timeout 需要秒数，收到 '" + value + "'");
                         return EXIT_USAGE;
+                    }
+                }
+                case "--connect-timeout", "--request-timeout" -> {
+                    String option = args[i];
+                    String value = require(args, ++i, err);
+                    java.time.Duration parsed;
+                    try {
+                        parsed = java.time.Duration.ofSeconds(Math.max(1, Long.parseLong(value.strip())));
+                    } catch (RuntimeException e) {
+                        err.println("mcp-sentinel: " + option + " 需要秒数，收到 '" + value + "'");
+                        return EXIT_USAGE;
+                    }
+                    if ("--connect-timeout".equals(option)) {
+                        connectTimeoutOverride = parsed;
+                    } else {
+                        requestTimeoutOverride = parsed;
                     }
                 }
                 case "--fail-on" -> {
@@ -227,6 +245,12 @@ public final class Main {
 
         if (timeoutOverride != null) {
             target = target.withTimeout(timeoutOverride);
+        }
+        if (connectTimeoutOverride != null) {
+            target = target.withConnectTimeout(connectTimeoutOverride);
+        }
+        if (requestTimeoutOverride != null) {
+            target = target.withRequestTimeout(requestTimeoutOverride);
         }
 
         // 请求头里的环境变量引用属于**配置**问题，不是连接问题：变量名写错时
@@ -597,7 +621,9 @@ public final class Main {
                   --fail-on-change LEVEL   工具面变更在哪个级别阻断
                                            （INFO / BREAKING / DANGEROUS，默认 BREAKING）
                   --accept-changes         批准本次变更并写回基线（有意的迭代走这一步）
-                  --timeout N              连接超时秒数（默认取配置里的 timeoutSeconds，否则 20）
+                  --timeout N              兼容旧用法：同时设置连接与请求超时秒数
+                  --connect-timeout N      HTTP 建连超时秒数（默认 20）
+                  --request-timeout N      MCP 初始化与工具列表请求超时秒数（默认 20）
 
                 哪些选项属于哪个子命令:
                   --out 两者都有意义（lock 用它指定基线的输出位置）。

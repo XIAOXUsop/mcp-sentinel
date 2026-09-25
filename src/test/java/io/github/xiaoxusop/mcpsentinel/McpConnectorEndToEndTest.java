@@ -8,6 +8,8 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.File;
 import java.util.List;
+import java.util.Map;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -58,5 +60,21 @@ class McpConnectorEndToEndTest {
 
         assertTrue(!result.ok());
         assertNotNull(result.error());
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void slowStdioStartupIsReportedAsInitializationFailure() {
+        String java = System.getProperty("java.home") + File.separator + "bin" + File.separator + "java";
+        ServerTarget target = new ServerTarget("slow-stdio", ServerTarget.Transport.STDIO, java,
+                List.of("-cp", System.getProperty("java.class.path"), TestMcpServer.class.getName(),
+                        "--delay-start-ms", "2500"), Map.of(), "", Map.of(),
+                Duration.ofSeconds(10), Duration.ofSeconds(1));
+
+        McpConnector.Result result = McpConnector.connect(target);
+
+        assertTrue(!result.ok());
+        assertTrue(result.error().contains("初始化失败"), result.error());
+        assertTrue(result.error().contains("请求超时=1s"), result.error());
     }
 }

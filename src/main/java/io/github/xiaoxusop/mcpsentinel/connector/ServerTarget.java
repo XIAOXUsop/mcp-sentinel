@@ -57,7 +57,7 @@ import java.util.regex.Pattern;
  */
 public record ServerTarget(String serverName, Transport transport, String command, List<String> args,
                            Map<String, String> env, String url, Map<String, String> headers,
-                           Duration timeout) {
+                           Duration timeout, Duration requestTimeout) {
 
     /** 默认请求超时。旧版把它硬编码在这里，连不上时要整整等满 20 秒 */
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(20);
@@ -112,7 +112,14 @@ public record ServerTarget(String serverName, Transport transport, String comman
         env = env == null ? Map.of() : Map.copyOf(env);
         headers = headers == null ? Map.of() : Map.copyOf(headers);
         timeout = timeout == null ? DEFAULT_TIMEOUT : timeout;
+        requestTimeout = requestTimeout == null ? timeout : requestTimeout;
         Objects.requireNonNull(transport, "transport");
+    }
+
+    /** 保留旧构造方式：原有超时值同时控制连接与请求。 */
+    public ServerTarget(String serverName, Transport transport, String command, List<String> args,
+                        Map<String, String> env, String url, Map<String, String> headers, Duration timeout) {
+        this(serverName, transport, command, args, env, url, headers, timeout, timeout);
     }
 
     /** 只要命令与参数的简写（stdio；测试与最简单的配置用这个） */
@@ -126,14 +133,21 @@ public record ServerTarget(String serverName, Transport transport, String comman
         Duration timeout = root.hasNonNull("timeoutSeconds")
                 ? Duration.ofSeconds(Math.max(1, root.path("timeoutSeconds").asLong(20)))
                 : DEFAULT_TIMEOUT;
+        Duration connectTimeout = root.hasNonNull("connectTimeoutSeconds")
+                ? Duration.ofSeconds(Math.max(1, root.path("connectTimeoutSeconds").asLong(20)))
+                : timeout;
+        Duration requestTimeout = root.hasNonNull("requestTimeoutSeconds")
+                ? Duration.ofSeconds(Math.max(1, root.path("requestTimeoutSeconds").asLong(20)))
+                : timeout;
 
         if (transport == Transport.STREAMABLE_HTTP) {
-            return readHttp(root, configFile, timeout);
+            return readHttp(root, configFile, connectTimeout, requestTimeout);
         }
-        return readStdio(root, configFile, timeout);
+        return readStdio(root, configFile, connectTimeout, requestTimeout);
     }
 
-    private static ServerTarget readStdio(JsonNode root, Path configFile, Duration timeout) throws IOException {
+    private static ServerTarget readStdio(JsonNode root, Path configFile, Duration connectTimeout,
+                                          Duration requestTimeout) throws IOException {
         String command = root.path("command").asText("");
         if (command.isBlank()) {
             throw new IOException("配置缺少 command 字段：" + configFile + "（这是 stdio 传输必需的）");
@@ -149,10 +163,11 @@ public record ServerTarget(String serverName, Transport transport, String comman
             envNode.fields().forEachRemaining(entry -> env.put(entry.getKey(), entry.getValue().asText()));
         }
         String name = root.path("server").asText(command);
-        return new ServerTarget(name, Transport.STDIO, command, args, env, "", Map.of(), timeout);
+        return new ServerTarget(name, Transport.STDIO, command, args, env, "", Map.of(), connectTimeout, requestTimeout);
     }
 
-    private static ServerTarget readHttp(JsonNode root, Path configFile, Duration timeout) throws IOException {
+    private static ServerTarget readHttp(JsonNode root, Path configFile, Duration connectTimeout,
+                                         Duration requestTimeout) throws IOException {
         String url = root.path("url").asText("");
         if (url.isBlank()) {
             throw new IOException("配置缺少 url 字段：" + configFile + "（这是 streamable-http 传输必需的）");
@@ -163,12 +178,21 @@ public record ServerTarget(String serverName, Transport transport, String comman
             headersNode.fields().forEachRemaining(entry -> headers.put(entry.getKey(), entry.getValue().asText()));
         }
         String name = root.path("server").asText(url);
-        return new ServerTarget(name, Transport.STREAMABLE_HTTP, "", List.of(), Map.of(), url, headers, timeout);
+        return new ServerTarget(name, Transport.STREAMABLE_HTTP, "", List.of(), Map.of(), url, headers,
+                connectTimeout, requestTimeout);
     }
 
     /** 覆盖超时（命令行 {@code --timeout} 用） */
     public ServerTarget withTimeout(Duration override) {
-        return new ServerTarget(serverName, transport, command, args, env, url, headers, override);
+        return new ServerTarget(serverName, transport, command, args, env, url, headers, override, override);
+    }
+
+    public ServerTarget withConnectTimeout(Duration override) {
+        return new ServerTarget(serverName, transport, command, args, env, url, headers, override, requestTimeout);
+    }
+
+    public ServerTarget withRequestTimeout(Duration override) {
+        return new ServerTarget(serverName, transport, command, args, env, url, headers, timeout, override);
     }
 
     /** 请求头里引用到的环境变量名（供错误提示与测试使用） */

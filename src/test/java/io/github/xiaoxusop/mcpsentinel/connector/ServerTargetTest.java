@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -104,5 +105,18 @@ class ServerTargetTest {
 
         ServerTarget target = ServerTarget.read(file);
         assertEquals(ServerTarget.Transport.STDIO, target.transport());
+    }
+
+    @Test
+    void separateTimeoutsOverrideTheLegacyValue(@TempDir Path dir) throws IOException {
+        Path file = config(dir, """
+                {"transport":"streamable-http","url":"http://127.0.0.1:1/mcp",
+                 "timeoutSeconds":30,"connectTimeoutSeconds":2,"requestTimeoutSeconds":7}
+                """);
+        ServerTarget target = ServerTarget.read(file);
+        assertEquals(Duration.ofSeconds(2), target.timeout());
+        assertEquals(Duration.ofSeconds(7), target.requestTimeout());
+        assertEquals(Duration.ofSeconds(9), target.withRequestTimeout(Duration.ofSeconds(9)).requestTimeout());
+        assertEquals(Duration.ofSeconds(2), target.withRequestTimeout(Duration.ofSeconds(9)).timeout());
     }
 }

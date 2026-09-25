@@ -23,6 +23,9 @@ public final class TestMcpServer {
     }
 
     public static void main(String[] args) throws InterruptedException {
+        if (args.length == 2 && "--delay-start-ms".equals(args[0])) {
+            Thread.sleep(Long.parseLong(args[1]));
+        }
         List<McpServerFeatures.SyncToolSpecification> tools = List.of(
                 tool("get_account_balance",
                         "Read-only: returns the balance for a given account id.",

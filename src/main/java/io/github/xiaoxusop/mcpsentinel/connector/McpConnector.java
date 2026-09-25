@@ -29,8 +29,6 @@ import io.github.xiaoxusop.mcpsentinel.Version;
  */
 public final class McpConnector {
 
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(20);
-
     private McpConnector() {
     }
 
@@ -77,17 +75,19 @@ public final class McpConnector {
             return Result.failure(target.serverName(), failureMessage(e));
         }
 
+        String phase = "初始化";
         try (McpSyncClient client = McpClient
                 .sync(transport)
                 // 版本从 pom 过滤进来，不再手写——见 Version 的注释
                 .clientInfo(new McpSchema.Implementation("mcp-sentinel", Version.value()))
-                .requestTimeout(target.timeout() == null ? REQUEST_TIMEOUT : target.timeout())
+                .requestTimeout(target.requestTimeout())
                 .build()) {
 
             McpSchema.InitializeResult handshake = client.initialize();
             String serverName = handshake != null && handshake.serverInfo() != null
                     ? handshake.serverInfo().name() : target.serverName();
 
+            phase = "工具列表请求";
             McpSchema.ListToolsResult listed = client.listTools();
             List<ToolDefinition> tools = new ArrayList<>();
             if (listed != null && listed.tools() != null) {
@@ -107,7 +107,9 @@ public final class McpConnector {
             return Result.success(ToolSurface.of(serverName, tools));
         } catch (Exception e) {
             return Result.failure(target.serverName(),
-                    e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()));
+                    phase + "失败（HTTP 连接超时=" + target.timeout().toSeconds()
+                            + "s，请求超时=" + target.requestTimeout().toSeconds() + "s）："
+                            + e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()));
         }
     }
 

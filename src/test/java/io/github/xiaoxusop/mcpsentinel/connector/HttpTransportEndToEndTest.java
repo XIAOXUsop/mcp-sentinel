@@ -194,6 +194,32 @@ class HttpTransportEndToEndTest {
 
         assertFalse(result.ok());
         assertTrue(result.error() != null && !result.error().isBlank(), "失败要有可读原因");
+        assertTrue(result.error().contains("初始化失败"), result.error());
+    }
+
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS)
+    void slowToolsResponseIsARequestFailureNotAnEmptySurface() throws Exception {
+        String url = startServer((exchange, body, authorization) -> {
+            if (body.contains("\"tools/list\"")) {
+                try {
+                    Thread.sleep(1800);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException(e);
+                }
+            }
+            normalMcpFlow(exchange, body);
+        });
+        ServerTarget target = new ServerTarget("slow", ServerTarget.Transport.STREAMABLE_HTTP,
+                "", java.util.List.of(), java.util.Map.of(), url, java.util.Map.of(),
+                Duration.ofSeconds(10), Duration.ofSeconds(1));
+
+        McpConnector.Result result = McpConnector.connect(target);
+
+        assertFalse(result.ok());
+        assertTrue(result.error().contains("工具列表请求失败"), result.error());
+        assertTrue(result.error().contains("请求超时=1s"), result.error());
     }
 
     @Test
