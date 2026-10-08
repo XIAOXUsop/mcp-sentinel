@@ -38,7 +38,7 @@
           取 2.21.5 = 修复线（最新的 2.21.6 也存在，但那不是任何一条的要求；
           与 amlagent 那次给 log4j 取 2.25.4 而非 2.25.5 是同一种取舍）。
         -->
-        <jackson.version>2.21.5</jackson.version>
+        <jackson.version>2.21.7</jackson.version>
         <junit.version>5.13.4</junit.version>
         <!--
           可复现构建：固定产物里每个条目的时间戳。
