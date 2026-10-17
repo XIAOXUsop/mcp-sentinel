@@ -33,7 +33,7 @@ Windows 11、Corretto 21.0.10、Python 3.12：
 
 工作区的 `deliverables/mcp-sentinel-g1-2026-10-17/` 保存新的候选 ZIP、JAR／SBOM／校验和／构建证据、验收摘要、日志、演示和评测结果，以及修复前源码备份。旧候选和旧审计反例原样保留，便于对照。
 
-源码仍在未提交工作树；构建证据明确标记 local-working-tree，不把它宣称为已发布标签或精确提交上的远端验证。报告字段和输入边界见 [JSON v2 约定](report-format.md)。
+上述本地验收生成时，源码尚未提交；该份构建证据保留 local-working-tree 标记，不把历史本地产物改称为远端构建。后续提交、推送及 CI 修复见 [执行记录](execution-status.md)。报告字段和输入边界见 [JSON v2 约定](report-format.md)。
 
 ## 尚未关闭的计划条件
 

@@ -162,4 +162,9 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # Windows redirected streams may default to cp1252. Diagnostics include
+    # Chinese and status symbols; the CLI always emits UTF-8, like the scanner.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     sys.exit(main(sys.argv[1:]))
