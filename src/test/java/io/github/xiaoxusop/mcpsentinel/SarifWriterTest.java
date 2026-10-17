@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -207,6 +208,20 @@ class SarifWriterTest {
             values.add(value);
         }
         return values;
+    }
+
+    @Test
+    void lineMovementDoesNotCreateNewAlertIdentity() throws Exception {
+        ScanReport original = report();
+        ScanReport withChange = new ScanReport(original.serverName(), original.surfaceFingerprint(), original.toolCount(),
+                original.findings(), new SurfaceDiff(List.of(new Change("DESCRIPTION_CHANGED", "changed-tool", 0,
+                ChangeSeverity.DANGEROUS, "Description changed", "abc"))));
+        var first = MAPPER.readTree(SarifWriter.render(withChange, new SarifWriter.Source("mcp.json", Map.of())));
+        Map<String, Integer> moved = new java.util.HashMap<>();
+        for (Finding finding : withChange.findings()) moved.put(finding.toolName() + "#0", 300);
+        for (Change change : withChange.diff().changes()) moved.put(change.toolName() + "#" + change.occurrence(), 400);
+        var second = MAPPER.readTree(SarifWriter.render(withChange, new SarifWriter.Source("mcp.json", moved)));
+        assertEquals(fingerprints(first), fingerprints(second));
     }
 
     /** 每条结果都要能通过 ruleIndex 指回 driver.rules —— 部分消费方依赖它 */

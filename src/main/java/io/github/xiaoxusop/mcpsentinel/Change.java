@@ -1,5 +1,7 @@
 package io.github.xiaoxusop.mcpsentinel;
 
+import java.util.List;
+
 /**
  * 一条工具面变更。
  *
@@ -14,11 +16,21 @@ package io.github.xiaoxusop.mcpsentinel;
  * @param afterDigest 变更后相关内容的摘要，**参与变更指纹的计算但不展示**
  */
 public record Change(String id, String toolName, int occurrence,
-                     ChangeSeverity severity, String detail, String afterDigest) {
+                     ChangeSeverity severity, String detail, String afterDigest, List<String> paths) {
 
     public Change {
         detail = detail == null ? "" : detail;
         afterDigest = afterDigest == null ? "" : afterDigest;
+        paths = List.copyOf(paths);
+    }
+
+    public Change(String id, String toolName, int occurrence, ChangeSeverity severity, String detail, String afterDigest) {
+        this(id, toolName, occurrence, severity, detail, afterDigest, List.of());
+    }
+
+    public Change at(String... pointers) { return withPaths(List.of(pointers)); }
+    public Change withPaths(List<String> pointers) {
+        return new Change(id, toolName, occurrence, severity, detail, afterDigest, pointers);
     }
 
     public static Change of(String id, ChangeSeverity severity, ToolDefinition tool, String detail) {
@@ -51,8 +63,9 @@ public record Change(String id, String toolName, int occurrence,
                 .substring(0, 32);
     }
 
-    /** 一行报告 */
+    /** 一行报告（工具名与变更说明均可能含不可信服务端输入，必须经过 Sanitizer 转义） */
     public String format() {
-        return "[%s] %s  %s  %s".formatted(severity, id, describe(), detail);
+        return "[%s] %s  %s  %s".formatted(severity, id,
+                Sanitizer.forReport(describe(), 80), Sanitizer.forReport(detail, 250));
     }
 }

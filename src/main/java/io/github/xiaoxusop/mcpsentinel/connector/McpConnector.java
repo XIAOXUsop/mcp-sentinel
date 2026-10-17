@@ -4,12 +4,13 @@ import io.github.xiaoxusop.mcpsentinel.ToolDefinition;
 import io.github.xiaoxusop.mcpsentinel.ToolSurface;
 import io.github.xiaoxusop.mcpsentinel.ToolFingerprint;
 import io.modelcontextprotocol.client.McpClient;
-import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.client.transport.StdioClientTransport;
 import io.modelcontextprotocol.spec.McpClientTransport;
-import io.modelcontextprotocol.json.McpJsonDefaults;
+import io.modelcontextprotocol.json.jackson2.JacksonMcpJsonMapper;
+import io.github.xiaoxusop.mcpsentinel.JsonSupport;
 import io.modelcontextprotocol.spec.McpSchema;
 
 import java.time.Duration;
@@ -49,7 +50,7 @@ public final class McpConnector {
         if (target.transport() == ServerTarget.Transport.STREAMABLE_HTTP) {
             Map<String, String> headers = target.resolveHeaders(System::getenv);
             return HttpClientStreamableHttpTransport.builder(target.url())
-                    .jsonMapper(McpJsonDefaults.getMapper())
+                    .jsonMapper(new JacksonMcpJsonMapper(JsonSupport.reader()))
                     .connectTimeout(target.timeout())
                     .httpRequestCustomizer((requestBuilder, method, uri, body, context) ->
                             headers.forEach(requestBuilder::header))
@@ -61,9 +62,9 @@ public final class McpConnector {
         // env 是主流客户端配置的标准字段，很多 server 靠它拿 API key；
         // 忽略它会让"可直接从现有配置复制"这个卖点在真实配置上直接失败
         if (!target.env().isEmpty()) {
-            parameters.env(target.env());
+            parameters.env(target.resolveEnvironment(System::getenv));
         }
-        return new StdioClientTransport(parameters.build(), McpJsonDefaults.getMapper());
+        return new StdioClientTransport(parameters.build(), new JacksonMcpJsonMapper(JsonSupport.reader()));
     }
 
     public static Result connect(ServerTarget target) {
@@ -72,45 +73,82 @@ public final class McpConnector {
             transport = buildTransport(target);
         } catch (Exception e) {
             // 配置层面的问题（比如引用了不存在的环境变量）在连接之前就要说清楚
-            return Result.failure(target.serverName(), failureMessage(e));
+            return Result.failure(target.serverName(), "CONFIGURATION", target.redactDiagnostic(failureMessage(e)));
         }
 
         String phase = "初始化";
-        try (McpSyncClient client = McpClient
-                .sync(transport)
+        McpAsyncClient client = McpClient
+                .async(transport)
                 // 版本从 pom 过滤进来，不再手写——见 Version 的注释
                 .clientInfo(new McpSchema.Implementation("mcp-sentinel", Version.value()))
                 .requestTimeout(target.requestTimeout())
-                .build()) {
+                .initializationTimeout(target.requestTimeout())
+                .build();
+        long deadline = System.nanoTime() + target.timeout().plus(target.requestTimeout().multipliedBy(2)).toNanos();
+        try {
 
-            McpSchema.InitializeResult handshake = client.initialize();
+            McpSchema.InitializeResult handshake = client.initialize().block(remaining(deadline));
+            if (handshake == null) return Result.failure(target.serverName(), "INITIALIZE", "初始化返回空响应，无法判定工具面");
             String serverName = handshake != null && handshake.serverInfo() != null
                     ? handshake.serverInfo().name() : target.serverName();
 
             phase = "工具列表请求";
-            McpSchema.ListToolsResult listed = client.listTools();
             List<ToolDefinition> tools = new ArrayList<>();
-            if (listed != null && listed.tools() != null) {
+            java.util.Set<String> cursors = new java.util.HashSet<>();
+            String cursor = null;
+            int pages = 0;
+            long totalBytes = 0;
+            do {
+                if (++pages > 100) return Result.failure(target.serverName(), "工具列表分页超过安全上限 100 页");
+                McpSchema.ListToolsResult listed = client.listTools(cursor).block(remaining(deadline));
+                if (listed == null || listed.tools() == null) return Result.failure(target.serverName(), "工具列表返回空响应，无法判定工具面");
+                if ((long) tools.size() + listed.tools().size() > target.maxTools()) {
+                    return Result.failure(target.serverName(),
+                            "服务器累计返回工具数超过安全上限 " + target.maxTools()
+                                    + "（可通过 --max-tools 或配置中的 maxTools 调整）");
+                }
                 for (McpSchema.Tool tool : listed.tools()) {
-                    // 六个字段全都要：title / outputSchema / annotations 都是攻击面。
-                    // 只取 name+description+inputSchema 时，单独翻转 destructiveHint
-                    // 或改 outputSchema 的指纹完全不变——实测退出码 0，等于看不见。
-                    tools.add(new ToolDefinition(
+                    if (tool.name() == null || tool.name().isBlank() || tool.inputSchema() == null) {
+                        return Result.failure(target.serverName(), "工具定义缺少 name 或 inputSchema，不能静默跳过");
+                    }
+                    ToolDefinition def = new ToolDefinition(
                             tool.name(),
                             tool.title(),
                             tool.description(),
                             toJson(tool.inputSchema()),
                             toJson(tool.outputSchema()),
-                            toJson(tool.annotations())));
+                            toJson(tool.annotations()));
+                    int bytes = def.toRawJson().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+                    if (bytes > ServerTarget.MAX_TOOL_DEFINITION_BYTES) {
+                        return Result.failure(target.serverName(),
+                                "工具 '" + tool.name() + "' 定义大小 " + bytes
+                                        + " 字节超过安全上限 " + ServerTarget.MAX_TOOL_DEFINITION_BYTES);
+                    }
+                    totalBytes += bytes;
+                    if (totalBytes > 16 * 1024 * 1024) return Result.failure(target.serverName(), "累计工具定义超过安全上限 16 MiB");
+                    def.canonicalForm();
+                    tools.add(def);
                 }
-            }
+                cursor = listed.nextCursor();
+                if (cursor != null && (cursor.isBlank() || !cursors.add(cursor))) {
+                    return Result.failure(target.serverName(), "工具分页 cursor 为空或重复；不能把未完成采集当成完整工具面");
+                }
+            } while (cursor != null);
             return Result.success(ToolSurface.of(serverName, tools));
         } catch (Exception e) {
-            return Result.failure(target.serverName(),
+            return Result.failure(target.serverName(), "初始化".equals(phase) ? "INITIALIZE" : "COLLECT_TOOLS", target.redactDiagnostic(
                     phase + "失败（HTTP 连接超时=" + target.timeout().toSeconds()
                             + "s，请求超时=" + target.requestTimeout().toSeconds() + "s）："
-                            + e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage()));
+                            + e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage())));
+        } finally {
+            client.close();
         }
+    }
+
+    private static Duration remaining(long deadline) {
+        long nanos = deadline - System.nanoTime();
+        if (nanos <= 0) throw new IllegalStateException("采集超过总时间预算");
+        return Duration.ofNanos(nanos);
     }
 
     /** schema 在 SDK 里是 Map，转成 JsonNode 以便规范化与指纹计算 */
@@ -122,14 +160,18 @@ public final class McpConnector {
     /**
      * 连接结果。失败时携带可读原因，供报告直接展示。
      */
-    public record Result(boolean ok, ToolSurface surface, String serverName, String error) {
+    public record Result(boolean ok, ToolSurface surface, String serverName, String error, String phase) {
 
         static Result success(ToolSurface surface) {
-            return new Result(true, surface, surface.serverName(), null);
+            return new Result(true, surface, surface.serverName(), null, "COMPLETE");
         }
 
         static Result failure(String serverName, String error) {
-            return new Result(false, null, serverName, error);
+            return failure(serverName, "COLLECT_TOOLS", error);
+        }
+
+        static Result failure(String serverName, String phase, String error) {
+            return new Result(false, null, serverName, error, phase);
         }
 
         public String shortFingerprint() {

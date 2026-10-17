@@ -33,11 +33,24 @@ public record ToolDefinition(String name, String title, String description,
         inputSchema = inputSchema == null ? MAPPER.createObjectNode() : inputSchema;
         outputSchema = outputSchema == null ? MAPPER.createObjectNode() : outputSchema;
         annotations = annotations == null ? MAPPER.createObjectNode() : annotations;
+        SchemaValidation.validate(inputSchema);
+        SchemaValidation.validate(outputSchema);
+        validateAnnotations(annotations);
     }
 
     /** 只要名称、描述与入参的简写（绝大多数调用点用这个） */
     public ToolDefinition(String name, String description, JsonNode inputSchema) {
         this(name, "", description, inputSchema, null, null);
+    }
+
+    private static void validateAnnotations(JsonNode annotations) {
+        if (!annotations.isObject()) throw new IllegalArgumentException("工具 annotations 必须为对象");
+        for (String key : List.of("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")) {
+            if (annotations.has(key) && !annotations.get(key).isBoolean())
+                throw new IllegalArgumentException("工具 /annotations/" + key + " 必须为布尔值");
+        }
+        if (annotations.has("title") && !annotations.get("title").isTextual())
+            throw new IllegalArgumentException("工具 /annotations/title 必须为字符串");
     }
 
     /**
@@ -47,13 +60,14 @@ public record ToolDefinition(String name, String title, String description,
      * 否则会因为服务端的字段重排而产生大量假变更。
      */
     public ObjectNode toJson() {
+        validateAnnotations(annotations);
         ObjectNode root = MAPPER.createObjectNode();
         root.put("name", name);
         root.put("title", SchemaCanonicalizer.normalizeText(title));
         root.put("description", SchemaCanonicalizer.normalizeText(description));
         root.set("inputSchema", SchemaCanonicalizer.canonicalize(inputSchema));
         root.set("outputSchema", SchemaCanonicalizer.canonicalize(outputSchema));
-        root.set("annotations", SchemaCanonicalizer.canonicalize(annotations));
+        root.set("annotations", SchemaCanonicalizer.canonicalizeMetadata(annotations));
         return root;
     }
 
@@ -61,15 +75,45 @@ public record ToolDefinition(String name, String title, String description,
         return toJson().toString();
     }
 
+    /** Evidence keeps the collected values; canonicalization is only for hashing. */
+    public ObjectNode toRawJson() {
+        ObjectNode root = MAPPER.createObjectNode();
+        root.put("name", name);
+        root.put("title", title);
+        root.put("description", description);
+        root.set("inputSchema", inputSchema.deepCopy());
+        root.set("outputSchema", outputSchema.deepCopy());
+        root.set("annotations", annotations.deepCopy());
+        return root;
+    }
+
     /** 从基线文件里读回 */
     public static ToolDefinition fromJson(JsonNode node) {
+        if (!node.isObject() || !node.path("name").isTextual() || node.path("name").textValue().isBlank()) {
+            throw new IllegalArgumentException("工具 name 必须为非空字符串");
+        }
+        for (String field : List.of("title", "description")) {
+            if (node.hasNonNull(field) && !node.get(field).isTextual()) {
+                throw new IllegalArgumentException("工具 " + field + " 必须为字符串");
+            }
+        }
+        if (!node.path("inputSchema").isObject() && !node.path("inputSchema").isBoolean()) {
+            throw new IllegalArgumentException("工具 inputSchema 必须为 Schema 对象或布尔值");
+        }
+        if (node.hasNonNull("outputSchema") && !node.get("outputSchema").isObject()
+                && !node.get("outputSchema").isBoolean()) {
+            throw new IllegalArgumentException("工具 outputSchema 必须为 Schema 对象或布尔值");
+        }
+        if (node.hasNonNull("annotations") && !node.get("annotations").isObject()) {
+            throw new IllegalArgumentException("工具 annotations 必须为对象");
+        }
         return new ToolDefinition(
                 node.path("name").asText(""),
                 node.path("title").asText(""),
                 node.path("description").asText(""),
-                node.path("inputSchema"),
-                node.path("outputSchema"),
-                node.path("annotations"));
+                node.get("inputSchema"),
+                node.hasNonNull("outputSchema") ? node.get("outputSchema") : null,
+                node.hasNonNull("annotations") ? node.get("annotations") : null);
     }
 
     /** schema 中声明的全部参数名（顶层 properties） */

@@ -2,70 +2,52 @@ package io.github.xiaoxusop.mcpsentinel.connector;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.net.URI;
+import java.util.Set;
+import io.github.xiaoxusop.mcpsentinel.ToolFingerprint;
+import io.github.xiaoxusop.mcpsentinel.JsonSupport;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 被扫描的 MCP 服务器目标。支持两种传输：stdio（本地子进程）与 Streamable HTTP（远程端点）。
- *
- * <p>stdio 的配置格式与主流 MCP 客户端保持一致，便于直接从现有配置里复制：
- * <pre>
- * {
- *   "server": "my-server",
- *   "command": "java",
- *   "args": ["-jar", "server.jar"],
- *   "env": { "API_KEY": "..." },
- *   "timeoutSeconds": 20
- * }
- * </pre>
- *
- * <p>Streamable HTTP：
- * <pre>
- * {
- *   "server": "my-remote-server",
- *   "transport": "streamable-http",
- *   "url": "https://mcp.example.com/mcp",
- *   "headers": { "Authorization": "Bearer ${MCP_TOKEN}" },
- *   "timeoutSeconds": 20
- * }
- * </pre>
- *
- * <p><b>请求头里的密钥用 {@code ${环境变量名}} 引用</b>，配置文件里不放明文。
- * 这不只是习惯问题：配置文件本身会被提交进版本库，而扫描器的输入恰恰是不可信的第三方配置——
- * 把令牌明文写进去，等于让"扫描别人的 MCP 服务器"顺手把自家令牌也交出去了。
- * 引用了不存在的环境变量会在连接前直接失败，而不是发一个空头出去。
- *
- * <p><b>{@code env} 是必需的</b>：它是 Claude Desktop / VS Code / Cursor 配置里的标准字段
- * （很多 server 靠它拿 API key），旧版忽略它——于是"可直接从现有配置复制"这个卖点
- * 在真实配置上会直接失败。
- *
- * <p><b>{@code cwd} 不支持</b>：MCP SDK 的 {@code ServerParameters} 没有暴露工作目录
- * （实测其 Builder 只有 command / args / env）。与其假装支持，不如在这里说清楚。
+ * 被扫描的 MCP 服务器目标。支持两种传输：stdio（本地子进程）与 Streamable HTTP（远程端点），
+ * 同时支持单目标格式与主流客户端 {@code mcpServers} 多目标格式导入（W07 / W08）。
  */
 public record ServerTarget(String serverName, Transport transport, String command, List<String> args,
                            Map<String, String> env, String url, Map<String, String> headers,
-                           Duration timeout, Duration requestTimeout) {
+                           Duration timeout, Duration requestTimeout, int maxTools) {
 
-    /** 默认请求超时。旧版把它硬编码在这里，连不上时要整整等满 20 秒 */
+    /** 默认请求超时 */
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(20);
+
+    /** 默认单服务最大允许采集的工具数量上限（W08 资源保护） */
+    public static final int DEFAULT_MAX_TOOLS = 1000;
+
+    /** 单个工具定义允许的最大 UTF-8 字节数（1 MiB，W08 资源保护） */
+    public static final int MAX_TOOL_DEFINITION_BYTES = 1024 * 1024;
 
     /** 请求头里对同名环境变量的引用，例如 {@code Bearer ${MCP_TOKEN}} */
     private static final Pattern ENV_REFERENCE = Pattern.compile("\\$\\{([A-Za-z_][A-Za-z0-9_]*)}");
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper STRICT_READER = JsonSupport.reader();
 
     /** 连接方式 */
     public enum Transport {
@@ -74,7 +56,6 @@ public record ServerTarget(String serverName, Transport transport, String comman
         /** 远程端点，走 MCP Streamable HTTP */
         STREAMABLE_HTTP;
 
-        /** 解析配置里的 transport 字段；缺省是 stdio，与主流客户端一致 */
         public static Transport parse(String value) throws IOException {
             if (value == null || value.isBlank()) {
                 return STDIO;
@@ -83,21 +64,6 @@ public record ServerTarget(String serverName, Transport transport, String comman
             return switch (normalized) {
                 case "stdio" -> STDIO;
                 case "streamable-http", "http" -> STREAMABLE_HTTP;
-                /*
-                 * `sse` **不能**当成 streamable-http 的别名收下——它们不是一套协议。
-                 *
-                 * MCP 早期用的是 HTTP+SSE（一个 GET 建事件流、再 POST 到它给的端点），
-                 * 后来换成了 Streamable HTTP。两者握手方式不同，把 sse 当后者用，
-                 * 结果是对着一个 SSE-only 的服务器按 Streamable HTTP 发请求、握手失败，
-                 * 报出来是「连接服务器失败」（退出 2）——**把人引到网络排查上去**。
-                 *
-                 * 这正是本仓库修过的那个形状（见 README 的 bug #15：一个本地拼写错误
-                 * 不该变成对外部进程的调用 + 退出码 2）。所以这里显式拒收并说清原因。
-                 *
-                 * 顺带说明：SDK 里**有** `HttpClientSseClientTransport`，接进来是可行的，
-                 * 只是本项目目前只声明支持两种传输（README「两种传输」）。哪天真要支持，
-                 * 改这里 + 连接层 + README，而不是让它继续在这条分支上冒充。
-                 */
                 case "sse" -> throw new IOException(
                         "transport 'sse' 是 MCP 早期的 HTTP+SSE 传输，与 streamable-http 不是一套协议，"
                                 + "本工具暂不支持。若你的服务器用的是 Streamable HTTP，请写 streamable-http；"
@@ -113,23 +79,147 @@ public record ServerTarget(String serverName, Transport transport, String comman
         headers = headers == null ? Map.of() : Map.copyOf(headers);
         timeout = timeout == null ? DEFAULT_TIMEOUT : timeout;
         requestTimeout = requestTimeout == null ? timeout : requestTimeout;
+        maxTools = maxTools <= 0 ? DEFAULT_MAX_TOOLS : maxTools;
         Objects.requireNonNull(transport, "transport");
     }
 
-    /** 保留旧构造方式：原有超时值同时控制连接与请求。 */
     public ServerTarget(String serverName, Transport transport, String command, List<String> args,
-                        Map<String, String> env, String url, Map<String, String> headers, Duration timeout) {
-        this(serverName, transport, command, args, env, url, headers, timeout, timeout);
+                        Map<String, String> env, String url, Map<String, String> headers,
+                        Duration timeout, Duration requestTimeout) {
+        this(serverName, transport, command, args, env, url, headers, timeout, requestTimeout, DEFAULT_MAX_TOOLS);
     }
 
-    /** 只要命令与参数的简写（stdio；测试与最简单的配置用这个） */
+    public ServerTarget(String serverName, Transport transport, String command, List<String> args,
+                        Map<String, String> env, String url, Map<String, String> headers, Duration timeout) {
+        this(serverName, transport, command, args, env, url, headers, timeout, timeout, DEFAULT_MAX_TOOLS);
+    }
+
     public ServerTarget(String serverName, String command, List<String> args) {
-        this(serverName, Transport.STDIO, command, args, Map.of(), "", Map.of(), DEFAULT_TIMEOUT);
+        this(serverName, Transport.STDIO, command, args, Map.of(), "", Map.of(),
+                DEFAULT_TIMEOUT, DEFAULT_TIMEOUT, DEFAULT_MAX_TOOLS);
     }
 
     public static ServerTarget read(Path configFile) throws IOException {
-        JsonNode root = MAPPER.readTree(Files.readString(configFile, StandardCharsets.UTF_8));
-        Transport transport = Transport.parse(root.path("transport").asText(""));
+        return read(configFile, null);
+    }
+
+    public static ServerTarget read(Path configFile, String selectedServer) throws IOException {
+        JsonNode root = parseConfigRoot(configFile);
+        if (root.has("mcpServers")) {
+            List<ServerTarget> all = readMcpServersNode(root.get("mcpServers"), configFile);
+            List<String> names = all.stream().map(ServerTarget::serverName).toList();
+            if (selectedServer != null && !selectedServer.isBlank()) {
+                return all.stream()
+                        .filter(t -> t.serverName().equals(selectedServer))
+                        .findFirst()
+                        .orElseThrow(() -> new IOException("配置文件 " + configFile
+                                + " 的 mcpServers 中找不到目标 '" + selectedServer + "'（可用目标：" + names + "）"));
+            }
+            if (all.size() == 1) {
+                return all.get(0);
+            }
+            throw new IOException("配置文件 " + configFile + " 含多个 mcpServers 目标 " + names
+                    + "，请用 `--server <名称>` 选择单个目标，或用 `--all-targets` 扫描全部目标。");
+        }
+        if (selectedServer != null && !selectedServer.isBlank()) {
+            ServerTarget single = readSingleNode(root, null, configFile);
+            if (!single.serverName().equals(selectedServer)) {
+                throw new IOException("配置文件仅含单个目标 '" + single.serverName()
+                        + "'，与请求的 --server '" + selectedServer + "' 不匹配。");
+            }
+            return single;
+        }
+        return readSingleNode(root, null, configFile);
+    }
+
+    /**
+     * 读取配置文件中的全部目标（支持单目标格式或 {@code mcpServers} 多目标格式）。
+     */
+    public static List<ServerTarget> readAll(Path configFile) throws IOException {
+        JsonNode root = parseConfigRoot(configFile);
+        if (root.has("mcpServers")) {
+            return readMcpServersNode(root.get("mcpServers"), configFile);
+        }
+        return List.of(readSingleNode(root, null, configFile));
+    }
+
+    private static JsonNode parseConfigRoot(Path configFile) throws IOException {
+        JsonNode root;
+        try {
+            root = STRICT_READER.readTree(Files.readString(configFile, StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            throw new IOException("解析配置文件失败：" + e.getMessage(), e);
+        }
+        if (root == null || !root.isObject()) {
+            throw new IOException("配置文件不是 JSON 对象：" + configFile);
+        }
+        return root;
+    }
+
+    private static List<ServerTarget> readMcpServersNode(JsonNode serversNode, Path configFile) throws IOException {
+        if (serversNode == null || !serversNode.isObject()) {
+            throw new IOException("配置文件中的 mcpServers 必须是 JSON 对象：" + configFile);
+        }
+        Map<String, JsonNode> sorted = new TreeMap<>();
+        Iterator<Map.Entry<String, JsonNode>> fields = serversNode.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> entry = fields.next();
+            sorted.put(entry.getKey(), entry.getValue());
+        }
+        if (sorted.isEmpty()) {
+            throw new IOException("配置文件中的 mcpServers 不能为空：" + configFile);
+        }
+        List<ServerTarget> targets = new ArrayList<>();
+        for (Map.Entry<String, JsonNode> entry : sorted.entrySet()) {
+            String key = entry.getKey();
+            JsonNode value = entry.getValue();
+            if (value == null || !value.isObject()) {
+                throw new IOException("mcpServers 中目标 '" + key + "' 的定义不是 JSON 对象：" + configFile);
+            }
+            if (value.has("disabled") && !value.get("disabled").isBoolean()) throw new IOException("disabled 必须为布尔值");
+            if (value.path("disabled").asBoolean(false)) {
+                continue;
+            }
+            targets.add(readSingleNode(value, key, configFile));
+        }
+        if (targets.isEmpty()) {
+            throw new IOException("mcpServers 中的所有目标均处于 disabled 状态：" + configFile);
+        }
+        return targets;
+    }
+
+    private static ServerTarget readSingleNode(JsonNode root, String fallbackName, Path configFile) throws IOException {
+        Set<String> supported = Set.of("server", "transport", "type", "command", "args", "env", "url", "headers",
+                "timeoutSeconds", "connectTimeoutSeconds", "requestTimeoutSeconds", "maxTools", "disabled");
+        var keys = root.fieldNames();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            if (!supported.contains(key)) throw new IOException("不支持的配置字段 " + key + "；导入不会静默丢弃配置");
+        }
+        for (String key : List.of("server", "transport", "type", "command", "url")) {
+            if (root.has(key) && !root.get(key).isTextual()) throw new IOException(key + " 必须为字符串");
+        }
+        for (String key : List.of("timeoutSeconds", "connectTimeoutSeconds", "requestTimeoutSeconds", "maxTools")) {
+            if (root.has(key) && (!root.get(key).isIntegralNumber() || !root.get(key).canConvertToInt()
+                    || root.get(key).intValue() < 1)) throw new IOException(key + " 必须为正整数");
+            if (root.has(key) && !"maxTools".equals(key) && root.get(key).intValue() > 86400) throw new IOException(key + " 不能超过 86400 秒");
+        }
+        if (root.has("disabled") && !root.get("disabled").isBoolean()) throw new IOException("disabled 必须为布尔值");
+        if (root.has("args")) {
+            if (!root.get("args").isArray()) throw new IOException("args 必须为字符串数组");
+            for (JsonNode item : root.get("args")) if (!item.isTextual()) throw new IOException("args 必须为字符串数组");
+        }
+        for (String key : List.of("env", "headers")) {
+            if (root.has(key)) {
+                if (!root.get(key).isObject()) throw new IOException(key + " 必须为字符串映射");
+                for (JsonNode value : root.get(key)) if (!value.isTextual()) throw new IOException(key + " 必须为字符串映射");
+            }
+        }
+        String rawTransport = root.path("transport").asText(root.path("type").asText(""));
+        if (fallbackName != null && rawTransport.isBlank() && root.hasNonNull("url") && !root.hasNonNull("command")) {
+            rawTransport = "streamable-http";
+        }
+        Transport transport = Transport.parse(rawTransport);
         Duration timeout = root.hasNonNull("timeoutSeconds")
                 ? Duration.ofSeconds(Math.max(1, root.path("timeoutSeconds").asLong(20)))
                 : DEFAULT_TIMEOUT;
@@ -139,15 +229,19 @@ public record ServerTarget(String serverName, Transport transport, String comman
         Duration requestTimeout = root.hasNonNull("requestTimeoutSeconds")
                 ? Duration.ofSeconds(Math.max(1, root.path("requestTimeoutSeconds").asLong(20)))
                 : timeout;
+        int maxTools = root.hasNonNull("maxTools")
+                ? Math.max(1, root.path("maxTools").asInt(DEFAULT_MAX_TOOLS))
+                : DEFAULT_MAX_TOOLS;
 
         if (transport == Transport.STREAMABLE_HTTP) {
-            return readHttp(root, configFile, connectTimeout, requestTimeout);
+            return readHttp(root, fallbackName, configFile, connectTimeout, requestTimeout, maxTools);
         }
-        return readStdio(root, configFile, connectTimeout, requestTimeout);
+        return readStdio(root, fallbackName, configFile, connectTimeout, requestTimeout, maxTools);
     }
 
-    private static ServerTarget readStdio(JsonNode root, Path configFile, Duration connectTimeout,
-                                          Duration requestTimeout) throws IOException {
+    private static ServerTarget readStdio(JsonNode root, String fallbackName, Path configFile,
+                                          Duration connectTimeout, Duration requestTimeout,
+                                          int maxTools) throws IOException {
         String command = root.path("command").asText("");
         if (command.isBlank()) {
             throw new IOException("配置缺少 command 字段：" + configFile + "（这是 stdio 传输必需的）");
@@ -162,37 +256,92 @@ public record ServerTarget(String serverName, Transport transport, String comman
         if (envNode.isObject()) {
             envNode.fields().forEachRemaining(entry -> env.put(entry.getKey(), entry.getValue().asText()));
         }
-        String name = root.path("server").asText(command);
-        return new ServerTarget(name, Transport.STDIO, command, args, env, "", Map.of(), connectTimeout, requestTimeout);
+        String defaultName = (fallbackName != null && !fallbackName.isBlank()) ? fallbackName : command;
+        String name = fallbackName != null ? fallbackName : root.path("server").asText(defaultName);
+        if (name.isBlank()) throw new IOException("server 必须为非空字符串");
+        return new ServerTarget(name, Transport.STDIO, command, args, env, "", Map.of(),
+                connectTimeout, requestTimeout, maxTools);
     }
 
-    private static ServerTarget readHttp(JsonNode root, Path configFile, Duration connectTimeout,
-                                         Duration requestTimeout) throws IOException {
+    private static ServerTarget readHttp(JsonNode root, String fallbackName, Path configFile,
+                                         Duration connectTimeout, Duration requestTimeout,
+                                         int maxTools) throws IOException {
         String url = root.path("url").asText("");
         if (url.isBlank()) {
             throw new IOException("配置缺少 url 字段：" + configFile + "（这是 streamable-http 传输必需的）");
+        }
+        try {
+            URI endpoint = URI.create(url);
+            if (!("http".equalsIgnoreCase(endpoint.getScheme()) || "https".equalsIgnoreCase(endpoint.getScheme()))
+                    || endpoint.getHost() == null) throw new IllegalArgumentException();
+        } catch (IllegalArgumentException e) {
+            throw new IOException("url 必须为有效的 http 或 https 绝对地址");
         }
         Map<String, String> headers = new LinkedHashMap<>();
         JsonNode headersNode = root.path("headers");
         if (headersNode.isObject()) {
             headersNode.fields().forEachRemaining(entry -> headers.put(entry.getKey(), entry.getValue().asText()));
         }
-        String name = root.path("server").asText(url);
+        String defaultName = (fallbackName != null && !fallbackName.isBlank()) ? fallbackName : origin(url);
+        String name = fallbackName != null ? fallbackName : root.path("server").asText(defaultName);
+        if (name.isBlank()) throw new IOException("server 必须为非空字符串");
         return new ServerTarget(name, Transport.STREAMABLE_HTTP, "", List.of(), Map.of(), url, headers,
-                connectTimeout, requestTimeout);
+                connectTimeout, requestTimeout, maxTools);
     }
 
-    /** 覆盖超时（命令行 {@code --timeout} 用） */
+    /**
+     * 导出标准化单目标配置 JSON（保留 {@code ${ENV_VAR}} 引用，不启动服务）。
+     */
+    public String toNormalizedJson() {
+        ObjectNode root = MAPPER.createObjectNode();
+        root.put("server", serverName);
+        if (transport == Transport.STREAMABLE_HTTP) {
+            root.put("transport", "streamable-http");
+            root.put("url", url);
+            if (!headers.isEmpty()) {
+                ObjectNode h = root.putObject("headers");
+                headers.forEach(h::put);
+            }
+        } else {
+            root.put("transport", "stdio");
+            root.put("command", command);
+            ArrayNode a = root.putArray("args");
+            args.forEach(a::add);
+            if (!env.isEmpty()) {
+                ObjectNode e = root.putObject("env");
+                env.forEach(e::put);
+            }
+        }
+        root.put("connectTimeoutSeconds", timeout.toSeconds());
+        root.put("requestTimeoutSeconds", requestTimeout.toSeconds());
+        if (maxTools != DEFAULT_MAX_TOOLS) {
+            root.put("maxTools", maxTools);
+        }
+        try {
+            return MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+        } catch (Exception e) {
+            throw new IllegalStateException("序列化标准化配置失败", e);
+        }
+    }
+
     public ServerTarget withTimeout(Duration override) {
-        return new ServerTarget(serverName, transport, command, args, env, url, headers, override, override);
+        return new ServerTarget(serverName, transport, command, args, env, url, headers,
+                override, override, maxTools);
     }
 
     public ServerTarget withConnectTimeout(Duration override) {
-        return new ServerTarget(serverName, transport, command, args, env, url, headers, override, requestTimeout);
+        return new ServerTarget(serverName, transport, command, args, env, url, headers,
+                override, requestTimeout, maxTools);
     }
 
     public ServerTarget withRequestTimeout(Duration override) {
-        return new ServerTarget(serverName, transport, command, args, env, url, headers, timeout, override);
+        return new ServerTarget(serverName, transport, command, args, env, url, headers,
+                timeout, override, maxTools);
+    }
+
+    public ServerTarget withMaxTools(int override) {
+        return new ServerTarget(serverName, transport, command, args, env, url, headers,
+                timeout, requestTimeout, override);
     }
 
     /** 请求头里引用到的环境变量名（供错误提示与测试使用） */
@@ -209,11 +358,6 @@ public record ServerTarget(String serverName, Transport transport, String comman
 
     /**
      * 把请求头里的 {@code ${VAR}} 替换成实际值。
-     *
-     * @param lookup 变量名 → 值；找不到时返回 null
-     * @throws IOException 引用了不存在的环境变量。**不静默发空头**——
-     *                     空 Authorization 会让请求以 401 失败，而真正的原因（变量名写错）
-     *                     就被埋进了一个看起来像"服务器拒绝"的错误里
      */
     public Map<String, String> resolveHeaders(Function<String, String> lookup) throws IOException {
         Map<String, String> resolved = new LinkedHashMap<>();
@@ -237,6 +381,53 @@ public record ServerTarget(String serverName, Transport transport, String comman
 
     /** 配置里的目标描述，用于失败诊断；<b>不含请求头值</b>，避免密钥进日志 */
     public String describeTarget() {
-        return transport == Transport.STDIO ? command + " " + String.join(" ", args) : url;
+        return transport == Transport.STDIO ? command + "（参数值不进入诊断日志）" : origin(url);
+    }
+
+    /** Namespace and non-secret origin/command, excluding headers, env and arguments. */
+    public String identity() {
+        String endpoint = transport == Transport.STDIO ? command : origin(url);
+        return "target:" + ToolFingerprint.sha256(serverName + "\n" + transport + "\n" + endpoint);
+    }
+
+    private static String origin(String url) {
+        URI uri = URI.create(url);
+        return uri.getScheme().toLowerCase(Locale.ROOT) + "://" + uri.getHost().toLowerCase(Locale.ROOT)
+                + (uri.getPort() == -1 ? "" : ":" + uri.getPort());
+    }
+
+    public Map<String, String> resolveEnvironment(Function<String, String> lookup) throws IOException {
+        Map<String, String> resolved = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : env.entrySet()) {
+            Matcher matcher = ENV_REFERENCE.matcher(entry.getValue());
+            StringBuilder value = new StringBuilder();
+            while (matcher.find()) {
+                String replacement = lookup.apply(matcher.group(1));
+                if (replacement == null) throw new IOException("env 引用的环境变量 " + matcher.group(1) + " 未设置");
+                matcher.appendReplacement(value, Matcher.quoteReplacement(replacement));
+            }
+            matcher.appendTail(value);
+            resolved.put(entry.getKey(), value.toString());
+        }
+        return resolved;
+    }
+
+    /** Remove configured credentials, argument values and endpoints from diagnostics. */
+    public String redactDiagnostic(String message) {
+        String safe = message == null ? "未知采集错误" : message;
+        safe = safe.replaceAll("https?://[^\\s\\\"'<>]+", "[ENDPOINT]");
+        List<String> values = new ArrayList<>(args);
+        values.addAll(env.values());
+        values.addAll(headers.values());
+        try { values.addAll(resolveEnvironment(System::getenv).values()); } catch (IOException ignored) { }
+        try { values.addAll(resolveHeaders(System::getenv).values()); } catch (IOException ignored) { }
+        List<String> secrets = new ArrayList<>(values);
+        for (String value : values) {
+            if (value.regionMatches(true, 0, "Bearer ", 0, 7)) secrets.add(value.substring(7));
+            if (value.regionMatches(true, 0, "Basic ", 0, 6)) secrets.add(value.substring(6));
+        }
+        secrets.sort(java.util.Comparator.comparingInt(String::length).reversed());
+        for (String value : secrets) if (!value.isEmpty()) safe = safe.replace(value, "[REDACTED]");
+        return safe;
     }
 }

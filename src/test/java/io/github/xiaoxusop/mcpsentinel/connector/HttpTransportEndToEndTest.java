@@ -304,7 +304,7 @@ class HttpTransportEndToEndTest {
 
         ServerTarget target = ServerTarget.read(config);
 
-        assertEquals("https://mcp.example.com/mcp", target.describeTarget());
+        assertEquals("https://mcp.example.com", target.describeTarget());
         // 引用到的变量名可以被报出来（用于提示），但值本身不在对象里
         assertEquals(java.util.List.of("MCP_TOKEN"), target.referencedEnvVars());
         assertFalse(target.describeTarget().contains("Bearer"), target.describeTarget());

@@ -1,0 +1,32 @@
+{
+  "version" : 1,
+  "schemaVersion" : 2,
+  "_notice" : "MCP 工具面离线快照（可能包含敏感工具描述，公开分享前可使用 --redact 导出脱敏副本）。",
+  "server" : "audit",
+  "targetId" : "server:audit",
+  "redacted" : false,
+  "surfaceFingerprint" : "b3ef76761c9f55a961903a6ea7909e7d4b6ba980cabdf8b147be340c55210b1d",
+  "capturedAt" : "2026-10-17T06:03:33.302344300Z",
+  "tools" : [
+    {
+      "name" : "configure",
+      "title" : "Preferences",
+      "description" : "Configures preferences.",
+      "inputSchema" : {
+        "type" : "object",
+        "additionalProperties" : false,
+        "properties" : {
+          "value" : {
+            "type" : "string"
+          }
+        }
+      },
+      "outputSchema" : { },
+      "annotations" : {
+        "readOnlyHint" : false,
+        "destructiveHint" : "unexpected"
+      },
+      "fingerprint" : "43701924a69b1995f1548f7ab455de0f9ab1ed9b5ea411313f6ae81eba2bdd20"
+    }
+  ]
+}

@@ -52,7 +52,7 @@ BUILD_FILES = {
     "gradle.properties",
     "gradle/libs.versions.toml",
 }
-BUILD_PREFIXES = (".mvn/", "gradle/wrapper/")
+BUILD_PREFIXES = (".mvn/", "gradle/wrapper/", "src/", ".github/workflows/", "scripts/")
 
 _COMMIT_LINE = re.compile(r"^[0-9a-f]{7,40}\t")
 

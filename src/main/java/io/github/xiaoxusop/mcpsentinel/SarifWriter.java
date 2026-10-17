@@ -3,6 +3,8 @@ package io.github.xiaoxusop.mcpsentinel;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -12,8 +14,6 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * 把扫描结果输出为 SARIF 2.1.0。
@@ -49,22 +49,38 @@ public final class SarifWriter {
             Map.entry("DUPLICATE_TOOL_NAME", "工具名重复，以名字为键的存储会互相覆盖"),
             Map.entry("UNSAFE_SERVER_NAME", "服务器名不符合规范字符集"),
             Map.entry("UNSAFE_TOOL_NAME", "工具名不符合 MCP 规范的字符集"),
+            Map.entry("CROSS_TOOL_INSTRUCTION", "指令性措辞跨相邻工具拆分拼接"),
+            Map.entry("CROSS_TOOL_DIRECTIVE", "工具描述点名操控本工具面内的其他工具"),
+            Map.entry("PARAMETER_REACHES_ACCESS_SURFACE", "参数名指向文件或网络访问面"),
             Map.entry("TOOL_ADDED", "新增工具（rug pull 最常见的形态）"),
             Map.entry("TOOL_REMOVED", "工具被移除"),
             Map.entry("DESCRIPTION_CHANGED", "工具描述被改写（描述即指令面）"),
-            Map.entry("SCHEMA_OPENED", "schema 放宽：additionalProperties 变为打开"),
+            Map.entry("TITLE_CHANGED", "工具标题被改写"),
+            Map.entry("SCHEMA_OPENED", "schema 放宽：additionalProperties 变为允许"),
+            Map.entry("SCHEMA_DEFAULT_EXPLICIT", "额外属性的缺省允许被显式表达"),
+            Map.entry("PARAM_TYPE_EQUIVALENT", "参数类型的等价写法发生变化"),
+            Map.entry("SCHEMA_CLOSED", "schema 收窄：additionalProperties 变为限制"),
             Map.entry("PARAM_ADDED_OPTIONAL", "新增可选参数（扩大可传内容）"),
             Map.entry("PARAM_ADDED_REQUIRED", "新增必填参数（破坏调用方）"),
             Map.entry("PARAM_REMOVED", "参数被移除"),
+            Map.entry("PARAM_TYPE_WIDENED", "参数类型被放宽"),
+            Map.entry("PARAM_TYPE_CHANGED", "参数类型被改变"),
             Map.entry("PARAM_CONSTRAINT_REMOVED", "参数约束被移除"),
             Map.entry("PARAM_CONSTRAINT_ADDED", "参数新增约束"),
+            Map.entry("PARAM_CONSTRAINT_CHANGED", "参数约束取值被修改"),
+            Map.entry("PARAM_ENUM_REMOVED", "参数移除了 enum 约束"),
+            Map.entry("PARAM_ENUM_ADDED", "参数新增了 enum 约束"),
             Map.entry("PARAM_ENUM_WIDENED", "参数取值域变宽"),
             Map.entry("PARAM_ENUM_NARROWED", "参数取值域变窄"),
+            Map.entry("PARAM_ENUM_CHANGED", "参数取值域发生改变"),
+            Map.entry("PARAM_DESCRIPTION_CHANGED", "参数描述被改写"),
             Map.entry("REQUIRED_ADDED", "参数变为必填"),
             Map.entry("REQUIRED_REMOVED", "参数不再必填"),
             Map.entry("ANNOTATION_DESTRUCTIVE_FLIPPED", "destructiveHint 被翻转"),
             Map.entry("ANNOTATION_READONLY_FLIPPED", "readOnlyHint 被翻转"),
-            Map.entry("OUTPUT_SCHEMA_CHANGED", "出参 schema 被改写"));
+            Map.entry("ANNOTATION_CHANGED", "工具注解被改写"),
+            Map.entry("OUTPUT_SCHEMA_CHANGED", "出参 schema 被改写"),
+            Map.entry("UNGRADED_SCHEMA_CHANGE", "schema 存在未覆盖路径变化（按保守阻断处理）"));
 
     private SarifWriter() {
     }
@@ -87,8 +103,9 @@ public final class SarifWriter {
 
         /** 有基线就用基线（能精确到行），否则退回配置文件（只能指到第 1 行） */
         public static Source fromFiles(Path configFile, Path baselineFile) throws IOException {
-            Path chosen = Files.isRegularFile(baselineFile) ? baselineFile : configFile;
-            Map<String, Integer> lines = Files.isRegularFile(baselineFile)
+            boolean hasBaseline = baselineFile != null && Files.isRegularFile(baselineFile);
+            Path chosen = hasBaseline ? baselineFile : configFile;
+            Map<String, Integer> lines = hasBaseline
                     ? scanToolLines(baselineFile) : Map.of();
             return new Source(toRepoRelativeUri(chosen), lines);
         }
@@ -155,7 +172,7 @@ public final class SarifWriter {
             // 每一次非空运行都带着这条错误。
             ObjectNode ruleProperties = rule.putObject("properties");
             ruleProperties.putArray("tags").add("security");
-            ruleProperties.put("precision", "high");
+            ruleProperties.put("precision", "medium");
         });
 
         ArrayNode results = run.putArray("results");
@@ -170,7 +187,7 @@ public final class SarifWriter {
             result.putObject("message").put("text", Sanitizer.forSarifText(
                     finding.message() + (finding.evidence().isBlank()
                             ? "" : " — 证据: " + finding.evidence())));
-            locate(result, source, finding.toolName(), 0, report, ruleId);
+            locate(result, source, finding.toolName(), 0, report, ruleId, "");
         }
 
         // 每个变更单独一条结果：调用方据此决定"改了什么、什么级别、要不要批准"
@@ -186,7 +203,9 @@ public final class SarifWriter {
                         "工具面变更（%s，%s）：%s".formatted(change.severity().label(),
                                 report.diff().isApproved(change) ? "已批准" : "未批准",
                                 change.detail())));
-                locate(result, source, change.toolName(), change.occurrence(), report, change.id());
+                if (report.diff().isApproved(change)) result.putArray("suppressions").addObject()
+                        .put("kind", "external").put("status", "accepted").put("justification", "已批准此目标的具体工具面变化");
+                locate(result, source, change.toolName(), change.occurrence(), report, change.id(), change.digest());
             }
         }
 
@@ -205,7 +224,7 @@ public final class SarifWriter {
      * 它们不该挤占定位符。
      */
     private static void locate(ObjectNode result, Source source, String toolName, int occurrence,
-                               ScanReport report, String ruleId) {
+                               ScanReport report, String ruleId, String changeIdentity) {
         ObjectNode location = result.putArray("locations").addObject();
         ObjectNode physical = location.putObject("physicalLocation");
         physical.putObject("artifactLocation").put("uri", source.uri());
@@ -238,10 +257,11 @@ public final class SarifWriter {
         // （`^primaryLocationLineHash$`），也是最常用的那种"行内容变了就是新告警"的语义。
         // 键名带 `/` 的那个虽然也能过 schema（该对象的 additionalProperties 也是字符串），
         // 但把行哈希挂在具名键上更省事：上传工具本来就认它。
-        String lineHash = fingerprint(ruleId, toolName, String.valueOf(line));
+        String lineHash = fingerprint(ruleId, toolName + "#" + occurrence,
+                report.targetId() + ":" + changeIdentity);
         result.putObject("partialFingerprints")
                 .put("primaryLocationLineHash", lineHash)
-                .put("mcpSentinelRuleTool", fingerprint(ruleId, toolName, report.serverName()));
+                .put("mcpSentinelRuleTool", lineHash);
     }
 
     /** 同一条规则命中同一个工具 → 同一个指纹，这样重跑是更新 alert 而不是新增 */
@@ -295,12 +315,14 @@ public final class SarifWriter {
         Path base = Path.of("").toAbsolutePath().normalize();
         try {
             if (absolute.startsWith(base)) {
-                return base.relativize(absolute).toString().replace('\\', '/');
+                String relative = base.relativize(absolute).toString().replace('\\', '/');
+                try { return new java.net.URI(null, null, relative, null).toASCIIString(); }
+                catch (java.net.URISyntaxException e) { return absolute.toUri().toASCIIString(); }
             }
         } catch (IllegalArgumentException e) {
             // 跨盘符时 relativize 会抛，落到下面的 file: 分支
         }
-        return "file:///" + absolute.toString().replace('\\', '/');
+        return absolute.toUri().toASCIIString();
     }
 
     /**
@@ -310,32 +332,22 @@ public final class SarifWriter {
      * 而不是靠匹配方括号——数组与对象的缩进写法会随打印器变化，靠括号太脆。
      */
     private static Map<String, Integer> scanToolLines(Path baselineFile) throws IOException {
-        Pattern nameLine = Pattern.compile("^\\s*\"name\"\\s*:\\s*\"(.*?)\"\\s*,?\\s*$");
         Map<String, Integer> lines = new LinkedHashMap<>();
         Map<String, Integer> seen = new HashMap<>();
-        List<String> content = Files.readAllLines(baselineFile, StandardCharsets.UTF_8);
-        boolean inTools = false;
-        for (int i = 0; i < content.size(); i++) {
-            String line = content.get(i);
-            if (!inTools) {
-                if (line.contains("\"tools\"") && line.contains("[")) {
-                    inTools = true;
-                    if (line.matches("^\\s*\"tools\"\\s*:\\s*\\[\\s*$")) {
-                        continue;
-                    }
-                    // 首元素与 `[` 同行的写法：继续往下走，本行也参与匹配
-                } else {
-                    continue;
+        try (JsonParser parser = MAPPER.getFactory().createParser(Files.newBufferedReader(baselineFile, StandardCharsets.UTF_8))) {
+            while (parser.nextToken() != null) {
+                if (parser.currentToken() != JsonToken.FIELD_NAME || !"name".equals(parser.currentName())) continue;
+                var object = parser.getParsingContext();
+                var array = object.getParent();
+                if (array == null || !array.inArray() || array.getParent() == null
+                        || !array.getParent().inObject() || !"tools".equals(array.getParent().getCurrentName())
+                        || array.getParent().getParent() == null || !array.getParent().getParent().inRoot()) continue;
+                int line = parser.currentTokenLocation().getLineNr();
+                if (parser.nextToken() == JsonToken.VALUE_STRING) {
+                    String name = parser.getText();
+                    int occurrence = seen.merge(name, 1, Integer::sum) - 1;
+                    lines.put(name + "#" + occurrence, line);
                 }
-            }
-            if (line.contains("\"acceptedChanges\"")) {
-                break;
-            }
-            Matcher matcher = nameLine.matcher(line);
-            if (matcher.matches()) {
-                String name = matcher.group(1);
-                int occurrence = seen.merge(name, 1, Integer::sum) - 1;
-                lines.putIfAbsent(name + "#" + occurrence, i + 1);
             }
         }
         return lines;

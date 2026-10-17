@@ -14,11 +14,16 @@ import java.util.Set;
  * <p>{@code approvedDigests} 是基线里已批准的变更指纹集合。命中的变更仍然会被报告，
  * 但**不阻断 CI**：变更在首次出现时要人批准一次，之后每次运行都不必再批准。
  */
-public record SurfaceDiff(List<Change> changes, Set<String> approvedDigests) {
+public record SurfaceDiff(List<Change> changes, Set<String> approvedDigests, List<PathChange> paths) {
 
     public SurfaceDiff {
         changes = List.copyOf(changes);
         approvedDigests = Set.copyOf(approvedDigests);
+        paths = List.copyOf(paths);
+    }
+
+    public SurfaceDiff(List<Change> changes, Set<String> approvedDigests) {
+        this(changes, approvedDigests, List.of());
     }
 
     public SurfaceDiff(List<Change> changes) {

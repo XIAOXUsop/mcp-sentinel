@@ -61,7 +61,7 @@ public final class RawMcpServer {
             String method = request.path("method").asText("");
             ObjectNode result = switch (method) {
                 case "initialize" -> initializeResult(spec, request);
-                case "tools/list" -> toolsResult(spec);
+                case "tools/list" -> toolsResult(spec, request);
                 default -> MAPPER.createObjectNode();   // 其余方法回空结果，够客户端继续
             };
 
@@ -84,7 +84,12 @@ public final class RawMcpServer {
         return result;
     }
 
-    private static ObjectNode toolsResult(JsonNode spec) {
+    private static ObjectNode toolsResult(JsonNode spec, JsonNode request) {
+        if (spec.path("pages").isArray()) {
+            int index = request.path("params").path("cursor").asInt(0);
+            JsonNode page = spec.path("pages").path(index);
+            return page.isObject() ? (ObjectNode) page.deepCopy() : MAPPER.createObjectNode().set("tools", MAPPER.createArrayNode());
+        }
         ObjectNode result = MAPPER.createObjectNode();
         ArrayNode tools = result.putArray("tools");
         for (JsonNode tool : spec.path("tools")) {

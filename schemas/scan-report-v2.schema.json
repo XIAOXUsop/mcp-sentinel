@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mcp-sentinel scan report version 2",
+  "type": "object",
+  "required": ["generatedAt", "outputErrors"],
+  "oneOf": [{"$ref": "#/$defs/single"}, {"$ref": "#/$defs/batch"}],
+  "$defs": {
+    "fingerprint": {"type": "string", "pattern": "^(?:[0-9a-f]{64})?$"},
+    "category": {"enum": ["NONE", "USAGE_OR_CONFIG_ERROR", "CONNECTION_FAILED", "STATIC_RISK_FINDINGS", "UNAPPROVED_DRIFT", "BASELINE_UNAVAILABLE", "OUTPUT_WRITE_FAILED"]},
+    "error": {
+      "type": "object", "additionalProperties": false,
+      "required": ["category", "phase", "message"],
+      "properties": {
+        "category": {"$ref": "#/$defs/category"},
+        "phase": {"type": "string", "minLength": 1},
+        "message": {"type": "string", "minLength": 1},
+        "targetId": {"type": "string"}
+      }
+    },
+    "errors": {"type": "array", "items": {"$ref": "#/$defs/error"}},
+    "tool": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "occurrence", "fingerprint"],
+      "properties": {"name": {"type": "string"}, "occurrence": {"type": "integer", "minimum": 0}, "fingerprint": {"$ref": "#/$defs/fingerprint"}}
+    },
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ruleId", "severity", "tool", "message", "evidence"],
+      "properties": {
+        "ruleId": {"type": "string"}, "severity": {"enum": ["HIGH", "MEDIUM", "LOW"]},
+        "tool": {"type": "string"}, "message": {"type": "string"}, "evidence": {"type": "string"}
+      }
+    },
+    "path": {
+      "type": "object", "additionalProperties": false,
+      "required": ["tool", "occurrence", "path", "beforePresent", "afterPresent", "before", "after"],
+      "properties": {
+        "tool": {"type": "string"}, "occurrence": {"type": "integer", "minimum": 0}, "path": {"type": "string"},
+        "beforePresent": {"type": "boolean"}, "afterPresent": {"type": "boolean"}, "before": true, "after": true
+      }
+    },
+    "change": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "tool", "occurrence", "severity", "approved", "detail", "digest", "paths"],
+      "properties": {
+        "id": {"type": "string"}, "tool": {"type": "string"}, "occurrence": {"type": "integer", "minimum": 0},
+        "severity": {"enum": ["INFO", "BREAKING", "DANGEROUS"]}, "approved": {"type": "boolean"},
+        "detail": {"type": "string"}, "digest": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+        "paths": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "diff": {
+      "type": "object", "additionalProperties": false,
+      "required": ["clean", "totalChanges", "blockingChanges", "paths", "changes"],
+      "properties": {
+        "clean": {"type": "boolean"}, "totalChanges": {"type": "integer", "minimum": 0}, "blockingChanges": {"type": "integer", "minimum": 0},
+        "paths": {"type": "array", "items": {"$ref": "#/$defs/path"}}, "changes": {"type": "array", "items": {"$ref": "#/$defs/change"}}
+      }
+    },
+    "single": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reportVersion", "toolVersion", "schemaVersion", "server", "surfaceFingerprint", "baselineFingerprint", "targetId", "fingerprintsAvailable", "collectionStatus", "toolCount", "status", "exitCode", "errorCategory", "tools", "errors", "thresholds", "riskCounts", "findings", "diff"],
+      "properties": {
+        "reportVersion": {"const": 2}, "toolVersion": {"type": "string"}, "schemaVersion": {"const": 2},
+        "server": {"type": "string"}, "surfaceFingerprint": {"$ref": "#/$defs/fingerprint"}, "baselineFingerprint": {"$ref": "#/$defs/fingerprint"},
+        "targetId": {"type": "string"}, "fingerprintsAvailable": {"type": "boolean"}, "collectionStatus": {"enum": ["COMPLETE", "FAILED"]},
+        "toolCount": {"type": "integer", "minimum": 0}, "status": {"enum": ["PASS", "FAIL"]}, "exitCode": {"type": "integer", "minimum": 0, "maximum": 6},
+        "errorCategory": {"$ref": "#/$defs/category"}, "tools": {"type": "array", "items": {"$ref": "#/$defs/tool"}}, "errors": {"$ref": "#/$defs/errors"},
+        "thresholds": {
+          "type": "object", "additionalProperties": false, "required": ["failOnRisk", "failOnChange"],
+          "properties": {"failOnRisk": {"enum": ["HIGH", "MEDIUM", "LOW"]}, "failOnChange": {"enum": ["INFO", "BREAKING", "DANGEROUS"]}}
+        },
+        "riskCounts": {
+          "type": "object", "additionalProperties": false, "required": ["HIGH", "MEDIUM", "LOW"],
+          "properties": {"HIGH": {"type": "integer", "minimum": 0}, "MEDIUM": {"type": "integer", "minimum": 0}, "LOW": {"type": "integer", "minimum": 0}}
+        },
+        "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}, "diff": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/diff"}]},
+        "outputErrors": {"type": "array", "items": {"enum": ["TEXT", "JSON", "SARIF"]}}, "generatedAt": {"type": "string"}
+      }
+    },
+    "batch": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reportVersion", "toolVersion", "mode", "targets", "collectionStatus", "exitCode", "status", "errorCategory", "errors", "outputErrors", "generatedAt"],
+      "properties": {
+        "reportVersion": {"const": 2}, "toolVersion": {"type": "string"}, "mode": {"const": "MULTI_TARGET"},
+        "targets": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/single"}}, "collectionStatus": {"enum": ["COMPLETE", "PARTIAL", "FAILED"]},
+        "exitCode": {"type": "integer", "minimum": 0, "maximum": 6}, "status": {"enum": ["PASS", "FAIL"]}, "errorCategory": {"$ref": "#/$defs/category"},
+        "errors": {"$ref": "#/$defs/errors"}, "outputErrors": {"type": "array", "items": {"enum": ["TEXT", "JSON", "SARIF"]}}, "generatedAt": {"type": "string"}
+      }
+    }
+  }
+}

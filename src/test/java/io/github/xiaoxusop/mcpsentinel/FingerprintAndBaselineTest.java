@@ -425,7 +425,7 @@ class FingerprintAndBaselineTest {
     void schemaVersionMismatchIsExplainedAsAnUpgradeNotAnAttack(@TempDir Path dir) throws Exception {
         Path file = dir.resolve("baseline.json");
         Baseline.of(ToolSurface.of("srv", List.of(tool("t", "T", "{\"type\":\"object\"}")))).write(file);
-        String content = Files.readString(file).replace("\"schemaVersion\" : 1", "\"schemaVersion\" : 99");
+        String content = Files.readString(file).replace("\"schemaVersion\" : " + SchemaCanonicalizer.VERSION, "\"schemaVersion\" : 99");
         Files.writeString(file, content);
 
         Exception error = assertThrows(Exception.class, () -> Baseline.read(file));

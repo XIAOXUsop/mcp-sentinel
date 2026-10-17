@@ -217,6 +217,16 @@ class BehindGate(unittest.TestCase):
         self.commit("build: wrapper")
         self.assertFalse(self.check("v1", "HEAD"))
 
+    def test_behind_on_source_or_workflow_blocks(self):
+        # F10 修正：落后于源码、工作流或脚本变更时同样拒绝发布旧 tag
+        self.write("pom.xml", "<project/>")
+        self.commit("init")
+        self.git("tag", "v1")
+        self.write("src/main/java/App.java", "class App {}\n")
+        self.commit("fix: core logic")
+        self.assertFalse(self.check("v1", "HEAD"))
+        self.assertIn("src/main/java/App.java", self.text())
+
     def test_unknown_base_is_not_a_pass(self):
         self.write("pom.xml", "<project/>")
         self.commit("init")

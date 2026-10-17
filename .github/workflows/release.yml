@@ -9,7 +9,11 @@ on:
     tags: [ 'v*' ]
 
 jobs:
+  verification:
+    uses: ./.github/workflows/verify.yml
+
   release:
+    needs: verification
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -70,31 +74,30 @@ jobs:
 
           python3 scripts/release_preflight.py "${args[@]}"
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v5
+      - uses: actions/setup-python@v6
         with:
-          java-version: '21'
-          distribution: 'temurin'
-          cache: maven
+          python-version: '3.12'
 
-      - name: Build
-        run: ./mvnw -B package
+      - name: Download the exact verified Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sentinel-ubuntu-latest
+          path: target
 
-      # 把产物里到底有哪些依赖、什么版本一并挂出去。
-      #
-      # 上面的闸只认识**已知**的 CVE；一个还没进 Dependabot 库的问题它看不见。
-      # 而使用者拿到一个 6MB 的 shaded jar，本来无从知道里面是 jackson 的哪个版本
-      # ——v0.5.2 就是靠解压 jar、读 META-INF 里的 pom.properties 才确认的。
-      # 顺带：对比两个版本的这份清单，就是"这次升级动了什么"的准确答案。
-      - name: Dependency inventory
+      - name: Bind tested artifact to tag and commit
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          ./mvnw -B -q dependency:list -DincludeScope=runtime -DoutputFile=target/DEPENDENCIES.txt
-          cat target/DEPENDENCIES.txt
+          python scripts/package_release.py --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
 
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             target/mcp-sentinel.jar
+            target/SHA256SUMS.txt
             target/DEPENDENCIES.txt
+            target/bom.json
+            target/build-evidence.json
           generate_release_notes: true

@@ -4,12 +4,18 @@ import io.github.xiaoxusop.mcpsentinel.Baseline;
 import io.github.xiaoxusop.mcpsentinel.Change;
 import io.github.xiaoxusop.mcpsentinel.ChangeSeverity;
 import io.github.xiaoxusop.mcpsentinel.Finding;
+import io.github.xiaoxusop.mcpsentinel.Sanitizer;
 import io.github.xiaoxusop.mcpsentinel.SarifWriter;
 import io.github.xiaoxusop.mcpsentinel.ScanReport;
-import io.github.xiaoxusop.mcpsentinel.Version;
+import io.github.xiaoxusop.mcpsentinel.ScanError;
 import io.github.xiaoxusop.mcpsentinel.SurfaceDiff;
+import io.github.xiaoxusop.mcpsentinel.SurfaceSnapshot;
 import io.github.xiaoxusop.mcpsentinel.ToolFingerprint;
 import io.github.xiaoxusop.mcpsentinel.ToolSurface;
+import io.github.xiaoxusop.mcpsentinel.Version;
+import io.github.xiaoxusop.mcpsentinel.AtomicFiles;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.xiaoxusop.mcpsentinel.connector.McpConnector;
 import io.github.xiaoxusop.mcpsentinel.connector.ServerTarget;
 import io.github.xiaoxusop.mcpsentinel.rules.RiskRules;
@@ -22,40 +28,26 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
-import java.util.Comparator;
 
 /**
  * mcp-sentinel 命令行。
  *
- * <p>三个子命令，对应一条完整的使用闭环：
+ * <p>核心子命令：
  * <pre>
- * mcp-sentinel lock --config mcp.json                     # 首次：把当前工具面锁进基线，提交进版本库
- * mcp-sentinel scan --config mcp.json                     # 之后：每次 CI 扫描，与基线对比并查风险
- * mcp-sentinel scan --config mcp.json --accept-changes    # 有意变更被拦下时：批准并写回基线
+ * mcp-sentinel lock --config mcp.json                        # 首次：锁定工具面基线并提交进版本库
+ * mcp-sentinel scan --config mcp.json [--json report.json]   # CI：与可信基线对比并查静态风险
+ * mcp-sentinel scan --config mcp.json --accept-changes       # 审批：接受有意的工具面变更并写回基线
+ * mcp-sentinel snapshot --config mcp.json --out snap.json    # 离线：保存工具面快照（支持 --redact）
+ * mcp-sentinel scan --snapshot snap.json --baseline ...      # 离线：不启动服务复跑扫描与比对
+ * mcp-sentinel import-config --config claude_desktop.json    # 导入：从 mcpServers 配置提取标准化目标
  * </pre>
- *
- * <p>退出码（可安全用作 CI 门禁）：
- * <ul>
- *   <li>{@code 0} 通过</li>
- *   <li>{@code 1} 用法或配置错误</li>
- *   <li>{@code 2} 连不上目标服务器</li>
- *   <li>{@code 3} 命中达到阈值的风险规则</li>
- *   <li>{@code 4} 工具面有达到阈值的未批准变更</li>
- *   <li>{@code 5} 基线不可用（缺失 / 不是普通文件 / 不可读 / 损坏 / 版本不兼容 / 内容不全）
- *       ——漂移检测这一核心能力没有生效</li>
- *   <li>{@code 6} 输出产物写入失败（{@code --out} / {@code --sarif}）</li>
- * </ul>
- * 风险与漂移同时出现时返回 {@code 4}——漂移是这个工具的核心信号。两种情况都会各自输出
- * 一行 {@code ::error::}，不会因为先判漂移就把风险项的注解吞掉。
- *
- * <p><b>fail-closed</b>：{@code scan} 默认要求基线可用。基线读不到时不会退化成
- * "只做风险扫描然后返回 0"——那会让一次配置事故看起来像一次干净通过。
- * 确实只要静态规则时，用 {@code --risk-only} 显式声明。
  */
 public final class Main {
 
@@ -67,24 +59,47 @@ public final class Main {
     static final int EXIT_BASELINE = 5;
     static final int EXIT_OUTPUT = 6;
 
+    private static final Set<String> COMMANDS = Set.of("lock", "scan", "snapshot", "import-config");
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    private record ReportItem(ScanReport report, Path source, Path baseline, int code, boolean complete) { }
+    private static final class Reports {
+        final List<ReportItem> items = new ArrayList<>();
+        final List<ScanError> inputErrors = new ArrayList<>();
+        void failed(ServerTarget target, Path source, Path baseline, int code, String phase, String message) {
+            failed(new ScanReport(target.serverName(), "", 0, List.of(), null, "", target.identity()),
+                    source, baseline, code, false, phase, target.redactDiagnostic(message));
+        }
+        void failed(ScanReport report, Path source, Path baseline, int code, boolean complete, String phase, String message) {
+            items.add(new ReportItem(report.withErrors(List.of(new ScanError(category(code), phase, message))),
+                    source, baseline, code, complete));
+        }
+    }
+
     private Main() {
     }
 
     public static void main(String[] args) {
-        // 显式固定输出编码：默认走平台编码，会让中文报告在 UTF-8 环境里变成乱码
         PrintStream out = new PrintStream(new FileOutputStream(FileDescriptor.out), true, StandardCharsets.UTF_8);
         PrintStream err = new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8);
         System.exit(run(args, out, err));
     }
 
     static int run(String[] args, PrintStream out, PrintStream err) {
-        /*
-         * `--version` / `-V`：产物必须能说出自己是谁。
-         *
-         * 加它是因为版本号曾经漂了两版没人发现——SARIF 自称 0.2.0、MCP 握手自称 0.5.1，
-         * 而 pom 是 0.5.3。根子上是手写死；但**没有任何一条命令能问出"这个 jar 是哪一版"**，
-         * 那两处错了也就无从暴露。现在版本只有一个来源（Version），这条命令是它的出口。
-         */
+        Reports reports = new Reports();
+        int code;
+        try {
+            code = runInternal(args, out, err, reports);
+        } catch (IllegalArgumentException e) {
+            err.println("mcp-sentinel: 输入无效: " + Sanitizer.forReport(e.getMessage(), 200));
+            reports.inputErrors.add(new ScanError(category(EXIT_USAGE), "INPUT_VALIDATION", e.getMessage()));
+            code = EXIT_USAGE;
+        }
+        if (args.length == 0 || !"scan".equals(args[0])) return code;
+        return writeReports(args, reports, code, out, err);
+    }
+
+    private static int runInternal(String[] args, PrintStream out, PrintStream err, Reports reports) {
         if (args.length > 0 && ("--version".equals(args[0]) || "-V".equals(args[0]))) {
             out.println("mcp-sentinel " + Version.value());
             return EXIT_OK;
@@ -94,98 +109,247 @@ public final class Main {
             return args.length == 0 ? EXIT_USAGE : EXIT_OK;
         }
         String command = args[0];
-        // 子命令先于一切 I/O 校验。
-        //
-        // 旧版把它放在读完配置、**连上服务器之后**的 switch 里，于是 `mcp-sentinel frobnicate
-        // --config mcp.json`（拼错了命令）会真的去执行配置里那条 command、真的拉起一个子进程，
-        // 然后因为握手失败退出 2「连接服务器失败」。两处都错：一个本地拼写错误变成了对外部
-        // 进程的调用，而退出码 2 会把人引到网络排查上去。配置里的命令来自不可信来源，
-        // 能不起就不起。
-        if (!"lock".equals(command) && !"scan".equals(command)) {
-            err.println("mcp-sentinel: 未知命令 '" + command + "'（可用：lock / scan）");
+        if (!COMMANDS.contains(command)) {
+            err.println("mcp-sentinel: 未知命令 '" + Sanitizer.forReport(command, 60)
+                    + "'（可用：lock / scan / snapshot / import-config）");
             return EXIT_USAGE;
         }
+
         Path config = null;
+        Path snapshotFile = null;
         Path baselineFile = Path.of("mcp-sentinel.lock.json");
+        Path baselineDir = Path.of(".");
         boolean baselineExplicit = false;
         Path outFile = null;
+        Path jsonFile = null;
         Path sarifFile = null;
+        String selectedServer = null;
+        boolean allTargets = false;
+        boolean redactSnapshot = false;
         Finding.Severity failOn = Finding.Severity.HIGH;
         ChangeSeverity failOnChange = ChangeSeverity.BREAKING;
         boolean acceptChanges = false;
+        String expectedBaseline = null;
+        String expectedSurface = null;
         boolean riskOnly = false;
         java.time.Duration timeoutOverride = null;
         java.time.Duration connectTimeoutOverride = null;
         java.time.Duration requestTimeoutOverride = null;
-        // 显式出现过的选项。用来发现「给了但在这个子命令下没有对应行为」的选项——
-        // 静默忽略比报错更糟：使用者会以为它生效了。
+        Integer maxToolsOverride = null;
         java.util.Set<String> seen = new java.util.LinkedHashSet<>();
 
         for (int i = 1; i < args.length; i++) {
-            if (args[i].startsWith("--")) {
-                seen.add(args[i]);
+            String opt = args[i];
+            if (opt.startsWith("--")) {
+                if (!seen.add(opt)) {
+                    err.println("mcp-sentinel: 参数重复: " + Sanitizer.forReport(opt));
+                    return EXIT_USAGE;
+                }
             }
-            switch (args[i]) {
-                case "--config" -> config = Path.of(require(args, ++i, err));
+            switch (opt) {
+                case "--config" -> {
+                    String val = requireValue(args, ++i, opt, err);
+                    if (val == null) return EXIT_USAGE;
+                    config = Path.of(val);
+                }
+                case "--snapshot" -> {
+                    String val = requireValue(args, ++i, opt, err);
+                    if (val == null) return EXIT_USAGE;
+                    snapshotFile = Path.of(val);
+                }
                 case "--baseline" -> {
-                    baselineFile = Path.of(require(args, ++i, err));
+                    String val = requireValue(args, ++i, opt, err);
+                    if (val == null) return EXIT_USAGE;
+                    baselineFile = Path.of(val);
                     baselineExplicit = true;
                 }
-                case "--out" -> outFile = Path.of(require(args, ++i, err));
-                case "--sarif" -> sarifFile = Path.of(require(args, ++i, err));
+                case "--baseline-dir" -> {
+                    String val = requireValue(args, ++i, opt, err);
+                    if (val == null) return EXIT_USAGE;
+                    baselineDir = Path.of(val);
+                }
+                case "--server" -> {
+                    String val = requireValue(args, ++i, opt, err);
+                    if (val == null) return EXIT_USAGE;
+                    selectedServer = val;
+                }
+                case "--all-targets" -> allTargets = true;
+                case "--redact" -> redactSnapshot = true;
+                case "--out" -> {
+                    String val = requireValue(args, ++i, opt, err);
+                    if (val == null) return EXIT_USAGE;
+                    outFile = Path.of(val);
+                }
+                case "--json" -> {
+                    String val = requireValue(args, ++i, opt, err);
+                    if (val == null) return EXIT_USAGE;
+                    jsonFile = Path.of(val);
+                }
+                case "--sarif" -> {
+                    String val = requireValue(args, ++i, opt, err);
+                    if (val == null) return EXIT_USAGE;
+                    sarifFile = Path.of(val);
+                }
                 case "--accept-changes" -> acceptChanges = true;
+                case "--expect-baseline", "--expect-surface" -> {
+                    String value = requireValue(args, ++i, opt, err);
+                    if (value == null) return EXIT_USAGE;
+                    if (!value.matches("[0-9a-f]{64}")) {
+                        err.println("mcp-sentinel: " + opt + " 需要完整的 64 位 SHA256 指纹");
+                        return EXIT_USAGE;
+                    }
+                    if ("--expect-baseline".equals(opt)) expectedBaseline = value;
+                    else expectedSurface = value;
+                }
                 case "--risk-only" -> riskOnly = true;
                 case "--timeout" -> {
-                    String value = require(args, ++i, err);
+                    String value = requireValue(args, ++i, opt, err);
+                    if (value == null) return EXIT_USAGE;
                     try {
-                        timeoutOverride = java.time.Duration.ofSeconds(
-                                Math.max(1, Long.parseLong(value.strip())));
+                        long seconds = Long.parseLong(value.strip());
+                        if (seconds < 1 || seconds > 86400) throw new IllegalArgumentException();
+                        timeoutOverride = java.time.Duration.ofSeconds(seconds);
                     } catch (RuntimeException e) {
-                        err.println("mcp-sentinel: --timeout 需要秒数，收到 '" + value + "'");
+                        err.println("mcp-sentinel: --timeout 需要秒数，收到 '" + Sanitizer.forReport(value, 40) + "'");
                         return EXIT_USAGE;
                     }
                 }
                 case "--connect-timeout", "--request-timeout" -> {
-                    String option = args[i];
-                    String value = require(args, ++i, err);
+                    String value = requireValue(args, ++i, opt, err);
+                    if (value == null) return EXIT_USAGE;
                     java.time.Duration parsed;
                     try {
-                        parsed = java.time.Duration.ofSeconds(Math.max(1, Long.parseLong(value.strip())));
+                        long seconds = Long.parseLong(value.strip());
+                        if (seconds < 1 || seconds > 86400) throw new IllegalArgumentException();
+                        parsed = java.time.Duration.ofSeconds(seconds);
                     } catch (RuntimeException e) {
-                        err.println("mcp-sentinel: " + option + " 需要秒数，收到 '" + value + "'");
+                        err.println("mcp-sentinel: " + opt + " 需要秒数，收到 '" + Sanitizer.forReport(value, 40) + "'");
                         return EXIT_USAGE;
                     }
-                    if ("--connect-timeout".equals(option)) {
+                    if ("--connect-timeout".equals(opt)) {
                         connectTimeoutOverride = parsed;
                     } else {
                         requestTimeoutOverride = parsed;
                     }
                 }
-                case "--fail-on" -> {
-                    String value = require(args, ++i, err).toUpperCase(Locale.ROOT);
+                case "--max-tools" -> {
+                    String value = requireValue(args, ++i, opt, err);
+                    if (value == null) return EXIT_USAGE;
                     try {
-                        failOn = Finding.Severity.valueOf(value);
+                        int parsed = Integer.parseInt(value.strip());
+                        if (parsed < 1) throw new NumberFormatException("must be >= 1");
+                        maxToolsOverride = parsed;
+                    } catch (RuntimeException e) {
+                        err.println("mcp-sentinel: --max-tools 需要正整数，收到 '" + Sanitizer.forReport(value, 40) + "'");
+                        return EXIT_USAGE;
+                    }
+                }
+                case "--fail-on" -> {
+                    String value = requireValue(args, ++i, opt, err);
+                    if (value == null) return EXIT_USAGE;
+                    try {
+                        failOn = Finding.Severity.valueOf(value.toUpperCase(Locale.ROOT));
                     } catch (IllegalArgumentException e) {
                         err.println("mcp-sentinel: --fail-on 只能是 HIGH / MEDIUM / LOW");
                         return EXIT_USAGE;
                     }
                 }
                 case "--fail-on-change" -> {
+                    String value = requireValue(args, ++i, opt, err);
+                    if (value == null) return EXIT_USAGE;
                     try {
-                        failOnChange = ChangeSeverity.parse(require(args, ++i, err));
+                        failOnChange = ChangeSeverity.parse(value);
                     } catch (IllegalArgumentException e) {
-                        err.println("mcp-sentinel: " + e.getMessage());
+                        err.println("mcp-sentinel: " + Sanitizer.forReport(e.getMessage(), 200));
                         return EXIT_USAGE;
                     }
                 }
                 default -> {
-                    err.println("mcp-sentinel: 未知参数 '" + args[i] + "'");
+                    err.println("mcp-sentinel: 未知参数 '" + Sanitizer.forReport(opt, 60) + "'");
                     return EXIT_USAGE;
                 }
             }
         }
-        if (config == null) {
-            err.println("mcp-sentinel: 必须指定 --config");
+
+        Set<String> common = Set.of("--config", "--server", "--out");
+        Set<String> online = Set.of("--timeout", "--connect-timeout", "--request-timeout", "--max-tools");
+        for (String option : seen) {
+            boolean allowed = common.contains(option)
+                    || (!"import-config".equals(command) && online.contains(option))
+                    || ("snapshot".equals(command) && "--redact".equals(option))
+                    || (("scan".equals(command) || "lock".equals(command))
+                        && Set.of("--baseline", "--baseline-dir", "--all-targets").contains(option))
+                    || ("scan".equals(command) && Set.of("--snapshot", "--json", "--sarif", "--risk-only",
+                        "--accept-changes", "--expect-baseline", "--expect-surface", "--fail-on", "--fail-on-change").contains(option));
+            if (!allowed) {
+                err.println("mcp-sentinel: " + option + " 不属于 " + command + " 子命令");
+                return EXIT_USAGE;
+            }
+        }
+        if (seen.contains("--baseline-dir") && !allTargets) {
+            err.println("mcp-sentinel: --baseline-dir 必须配合 --all-targets");
+            return EXIT_USAGE;
+        }
+        if (snapshotFile != null && (selectedServer != null || allTargets || seen.stream().anyMatch(online::contains))) {
+            err.println("mcp-sentinel: 离线快照不能同时指定在线目标或连接选项");
+            return EXIT_USAGE;
+        }
+        if (allTargets && "lock".equals(command) && outFile != null) {
+            err.println("mcp-sentinel: 批量 lock 请使用 --baseline-dir，不能指定单个 --out");
+            return EXIT_USAGE;
+        }
+        List<Path> outputs = new ArrayList<>();
+        for (Path path : new Path[]{outFile, jsonFile, sarifFile}) if (path != null) outputs.add(path);
+        if ("lock".equals(command) && outFile == null && !allTargets) outputs.add(baselineFile);
+        List<Path> inputs = new ArrayList<>();
+        for (Path path : new Path[]{config, snapshotFile, "scan".equals(command) ? baselineFile : null}) {
+            if (path != null) inputs.add(path);
+        }
+        try {
+            for (int a = 0; a < outputs.size(); a++) {
+                for (Path input : inputs) if (samePath(outputs.get(a), input)) throw new IOException("输出路径不能覆盖配置、快照或基线");
+                for (int b = a + 1; b < outputs.size(); b++) if (samePath(outputs.get(a), outputs.get(b))) throw new IOException("不同报告不能使用相同输出路径");
+            }
+        } catch (IOException e) {
+            err.println("mcp-sentinel: " + e.getMessage());
+            return EXIT_USAGE;
+        }
+
+        if ("import-config".equals(command)) {
+            if (config == null) {
+                err.println("mcp-sentinel: import-config 必须指定 --config");
+                return EXIT_USAGE;
+            }
+            return doImportConfig(config, selectedServer, outFile, out, err);
+        }
+
+        if ("snapshot".equals(command)) {
+            if (config == null || outFile == null) {
+                err.println("mcp-sentinel: snapshot 必须同时指定 --config 与 --out");
+                return EXIT_USAGE;
+            }
+            if (seen.contains("--sarif") || seen.contains("--json") || acceptChanges || riskOnly) {
+                err.println("mcp-sentinel: snapshot 只负责采集并保存快照，不接受扫描参数");
+                return EXIT_USAGE;
+            }
+            return doSnapshot(config, selectedServer, outFile, redactSnapshot,
+                    timeoutOverride, connectTimeoutOverride, requestTimeoutOverride, maxToolsOverride, out, err);
+        }
+
+        if (config == null && snapshotFile == null) {
+            err.println("mcp-sentinel: 必须指定 --config（或对 scan 指定 --snapshot）");
+            return EXIT_USAGE;
+        }
+        if (config != null && snapshotFile != null) {
+            err.println("mcp-sentinel: --config 与 --snapshot 互斥，请只指定其中一个输入源");
+            return EXIT_USAGE;
+        }
+        if (snapshotFile != null && !"scan".equals(command)) {
+            err.println("mcp-sentinel: --snapshot 只对 scan 有意义");
+            return EXIT_USAGE;
+        }
+        if (redactSnapshot) {
+            err.println("mcp-sentinel: --redact 只属于 snapshot 子命令");
             return EXIT_USAGE;
         }
         if (acceptChanges && !"scan".equals(command)) {
@@ -211,14 +375,30 @@ public final class Main {
                     + "（前者不做漂移检测，而后者判的正是漂移）");
             return EXIT_USAGE;
         }
+        if (allTargets && selectedServer != null) {
+            err.println("mcp-sentinel: --all-targets 与 --server 互斥");
+            return EXIT_USAGE;
+        }
+        if (acceptChanges && (expectedBaseline == null || expectedSurface == null)) {
+            err.println("mcp-sentinel: --accept-changes 必须同时给出已审阅报告中的 --expect-baseline 与 --expect-surface");
+            return EXIT_USAGE;
+        }
+        if (!acceptChanges && (expectedBaseline != null || expectedSurface != null)) {
+            err.println("mcp-sentinel: --expect-baseline / --expect-surface 只能用于 --accept-changes");
+            return EXIT_USAGE;
+        }
+        if (allTargets && acceptChanges) {
+            err.println("mcp-sentinel: 请用 --server 逐个批准已审阅快照，不能一次批准多个目标");
+            return EXIT_USAGE;
+        }
+        if (allTargets && baselineExplicit) {
+            err.println("mcp-sentinel: --all-targets 为每个目标使用独立基线，请用 --baseline-dir 指定目录而非单个 --baseline");
+            return EXIT_USAGE;
+        }
 
-        // lock 只做一件事：把当前工具面写成基线。它不评估风险、不做漂移比对、不产出报告。
-        // 这些选项因此没有对应行为，而**静默忽略**比报错更糟——脚本会以为产物已经落盘、
-        // 阈值已经生效。（`scan --out` 曾经就是这样被静默忽略的，见 CliEndToEndTest。）
         if ("lock".equals(command)) {
-            if (seen.contains("--sarif")) {
-                err.println("mcp-sentinel: lock 不产出 SARIF——它只写基线，不跑扫描。"
-                        + "--sarif 属于 scan。");
+            if (seen.contains("--sarif") || seen.contains("--json")) {
+                err.println("mcp-sentinel: lock 不产出报告或 SARIF——它只写基线，不跑扫描。");
                 return EXIT_USAGE;
             }
             if (seen.contains("--fail-on") || seen.contains("--fail-on-change")) {
@@ -235,51 +415,74 @@ public final class Main {
             }
         }
 
+        // 离线快照扫描路径（不启动任何外部服务）
+        if (snapshotFile != null) {
+            SurfaceSnapshot snap;
+            try {
+                snap = SurfaceSnapshot.read(snapshotFile);
+            } catch (Exception e) {
+                err.println("mcp-sentinel: 读取快照失败: " + Sanitizer.forReport(e.getMessage(), 240));
+                reports.inputErrors.add(new ScanError(category(EXIT_USAGE), "SNAPSHOT_READ", e.getMessage()));
+                return EXIT_USAGE;
+            }
+            if (snap.redacted() && !riskOnly) {
+                err.println("mcp-sentinel: 该快照为脱敏副本（redacted=true），标题与描述已脱敏，"
+                        + "不能作为原始指纹证据用于基线漂移比对或 --accept-changes。若仅需离线查静态规则，请加 --risk-only。");
+                err.println("::error::基线不可用，脱敏快照不能用于漂移检测");
+                reports.failed(ScanReport.of(snap.toSurface(), List.of(), null, "", snap.targetId(), false),
+                        snapshotFile, baselineFile, EXIT_BASELINE, true, "SNAPSHOT_VALIDATION", "脱敏快照不能作为漂移或审批证据");
+                return EXIT_BASELINE;
+            }
+            Baseline baseline = null;
+            if (!riskOnly) {
+                BaselineLoad loaded = loadBaseline(baselineFile, err);
+                if (!loaded.ok()) {
+                    err.println("::error::基线不可用，本次扫描给不出漂移结论"
+                            + "（fail-closed：不会降级成「没有漂移」，也不会自动重建基线）");
+                    reports.failed(ScanReport.of(snap.toSurface(), List.of(), null, "", snap.targetId(), true),
+                            snapshotFile, baselineFile, EXIT_BASELINE, true, "BASELINE_READ", loaded.message());
+                    return EXIT_BASELINE;
+                }
+                baseline = loaded.baseline();
+            }
+            return doScan(snap.toSurface(), snapshotFile, baselineFile, baseline, outFile, jsonFile, sarifFile,
+                    failOn, failOnChange, acceptChanges, riskOnly, snap.targetId(), expectedBaseline, expectedSurface, !snap.redacted(), reports, out, err);
+        }
+
+        // 多目标批量模式（W07）
+        if (allTargets) {
+            return runAllTargets(command, config, baselineDir, failOn, failOnChange,
+                    acceptChanges, riskOnly, timeoutOverride, connectTimeoutOverride,
+                    requestTimeoutOverride, maxToolsOverride, reports, out, err);
+        }
+
         ServerTarget target;
         try {
-            target = ServerTarget.read(config);
+            target = ServerTarget.read(config, selectedServer);
         } catch (Exception e) {
-            err.println("mcp-sentinel: 读取配置失败: " + e.getMessage());
+            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(e.getMessage(), 240));
+            reports.inputErrors.add(new ScanError(category(EXIT_USAGE), "CONFIG_READ", safeConfigError(e)));
             return EXIT_USAGE;
         }
+        target = applyOverrides(target, timeoutOverride, connectTimeoutOverride, requestTimeoutOverride, maxToolsOverride);
 
-        if (timeoutOverride != null) {
-            target = target.withTimeout(timeoutOverride);
-        }
-        if (connectTimeoutOverride != null) {
-            target = target.withConnectTimeout(connectTimeoutOverride);
-        }
-        if (requestTimeoutOverride != null) {
-            target = target.withRequestTimeout(requestTimeoutOverride);
-        }
-
-        // 请求头里的环境变量引用属于**配置**问题，不是连接问题：变量名写错时
-        // 报"连不上服务器"会把人引到网络排查上去。所以在这里先解析一次，
-        // 失败按用法/配置错误退出。
-        if (target.transport() == ServerTarget.Transport.STREAMABLE_HTTP) {
+        {
             try {
-                target.resolveHeaders(System::getenv);
+                validateCredentials(target);
             } catch (IOException e) {
-                err.println("mcp-sentinel: 配置错误: " + e.getMessage());
+                err.println("mcp-sentinel: 配置错误: " + Sanitizer.forReport(e.getMessage(), 240));
+                reports.failed(target, config, baselineFile, EXIT_USAGE, "CONFIGURATION", e.getMessage());
                 return EXIT_USAGE;
             }
         }
 
-        // fail-closed：基线是本地文件，先校验再连服务器。已经知道这次扫描给不出漂移结论，
-        // 就不必再去启动一个不可信的 MCP 服务器子进程。
         Baseline baseline = null;
         if ("scan".equals(command) && !riskOnly) {
             BaselineLoad loaded = loadBaseline(baselineFile, err);
             if (!loaded.ok()) {
-                // **这一行以前没有。** 基线不可用是 fail-closed，也是 README 用整节论证的
-                // "最重要的失败模式"——可它此前只打普通文本、不发 `::error::`，
-                // 于是 CI 里按注解分流的人看不到它（README 那句"四种情况会各自输出一行
-                // ::error::"当时其实是三种，少的就是这一条）。
-                //
-                // 之所以要紧：这条缺陷的受害场景正是"扫描通过"与"扫描真的做了漂移检测"
-                // 被混成同一件事——而这个仓库已经为同一个混淆栽过一次（README bug #14）。
                 err.println("::error::基线不可用，本次扫描给不出漂移结论"
                         + "（fail-closed：不会降级成「没有漂移」，也不会自动重建基线）");
+                reports.failed(target, config, baselineFile, EXIT_BASELINE, "BASELINE_READ", loaded.message());
                 return EXIT_BASELINE;
             }
             baseline = loaded.baseline();
@@ -287,32 +490,194 @@ public final class Main {
 
         McpConnector.Result connection = McpConnector.connect(target);
         if (!connection.ok()) {
-            err.println("mcp-sentinel: 连接服务器失败: " + connection.error());
-            err.println("  目标: " + target.describeTarget());
+            err.println("mcp-sentinel: 连接服务器失败: " + Sanitizer.forReport(target.redactDiagnostic(connection.error()), 240));
+            err.println("  目标: " + Sanitizer.forReport(target.describeTarget(), 200));
+            reports.failed(target, config, baselineFile, EXIT_CONNECT, connection.phase(), connection.error());
             return EXIT_CONNECT;
         }
         ToolSurface surface = connection.surface();
 
         return switch (command) {
-            case "lock" -> doLock(surface, outFile == null ? baselineFile : outFile, out, err);
-            case "scan" -> doScan(surface, config, baselineFile, baseline, outFile, sarifFile,
-                    failOn, failOnChange, acceptChanges, riskOnly, out, err);
-            // 命令已在入口处校验过，走到这里说明加了新命令却漏了处理分支。
-            // 抛出去而不是静默返回一个用法错误——后者会伪装成"用户写错了命令"。
+            case "lock" -> doLock(surface, target.identity(), outFile == null ? baselineFile : outFile, out, err);
+            case "scan" -> doScan(surface, config, baselineFile, baseline, outFile, jsonFile, sarifFile,
+                    failOn, failOnChange, acceptChanges, riskOnly, target.identity(), expectedBaseline, expectedSurface, true, reports, out, err);
             default -> throw new IllegalStateException(
                     "命令 '" + command + "' 通过了入口校验却没有对应的处理分支");
         };
     }
 
-    private static int doLock(ToolSurface surface, Path file, PrintStream out, PrintStream err) {
+    private static ServerTarget applyOverrides(ServerTarget target,
+                                               java.time.Duration timeout,
+                                               java.time.Duration connectTimeout,
+                                               java.time.Duration requestTimeout,
+                                               Integer maxTools) {
+        if (timeout != null) {
+            target = target.withTimeout(timeout);
+        }
+        if (connectTimeout != null) {
+            target = target.withConnectTimeout(connectTimeout);
+        }
+        if (requestTimeout != null) {
+            target = target.withRequestTimeout(requestTimeout);
+        }
+        if (maxTools != null) {
+            target = target.withMaxTools(maxTools);
+        }
+        return target;
+    }
+
+    private static int doImportConfig(Path configFile, String selectedServer, Path outFile,
+                                      PrintStream out, PrintStream err) {
+        ServerTarget target;
         try {
-            Baseline.of(surface).write(file);
+            target = ServerTarget.read(configFile, selectedServer);
         } catch (Exception e) {
-            err.println("mcp-sentinel: 写入基线失败: " + e.getMessage());
+            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(e.getMessage(), 240));
             return EXIT_USAGE;
         }
-        out.println("已锁定工具面基线: " + file.toAbsolutePath());
-        out.println("  服务器      : " + surface.serverName());
+        String normalized = target.toNormalizedJson();
+        out.println(normalized);
+        if (outFile != null) {
+            try {
+                if (outFile.getParent() != null) {
+                    Files.createDirectories(outFile.getParent());
+                }
+                Files.writeString(outFile, normalized, StandardCharsets.UTF_8);
+                err.println("已导出标准化配置: " + display(outFile));
+            } catch (IOException e) {
+                err.println("mcp-sentinel: 写出配置失败: " + Sanitizer.forReport(e.getMessage(), 240));
+                return EXIT_OUTPUT;
+            }
+        }
+        return EXIT_OK;
+    }
+
+    private static int doSnapshot(Path configFile, String selectedServer, Path outFile, boolean redact,
+                                  java.time.Duration timeout, java.time.Duration connectTimeout,
+                                  java.time.Duration requestTimeout, Integer maxTools,
+                                  PrintStream out, PrintStream err) {
+        ServerTarget target;
+        try {
+            target = ServerTarget.read(configFile, selectedServer);
+        } catch (Exception e) {
+            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(e.getMessage(), 240));
+            return EXIT_USAGE;
+        }
+        target = applyOverrides(target, timeout, connectTimeout, requestTimeout, maxTools);
+        {
+            try {
+                validateCredentials(target);
+            } catch (IOException e) {
+                err.println("mcp-sentinel: 配置错误: " + Sanitizer.forReport(e.getMessage(), 240));
+                return EXIT_USAGE;
+            }
+        }
+        McpConnector.Result connection = McpConnector.connect(target);
+        if (!connection.ok()) {
+            err.println("mcp-sentinel: 连接服务器失败: " + Sanitizer.forReport(connection.error(), 240));
+            err.println("  目标: " + Sanitizer.forReport(target.describeTarget(), 200));
+            return EXIT_CONNECT;
+        }
+        SurfaceSnapshot snapshot = SurfaceSnapshot.of(connection.surface(), redact, target.identity());
+        try {
+            snapshot.write(outFile);
+        } catch (IOException e) {
+            err.println("mcp-sentinel: 写入快照失败: " + Sanitizer.forReport(e.getMessage(), 240));
+            return EXIT_OUTPUT;
+        }
+        out.println("已保存工具面快照: " + display(outFile));
+        out.println("  服务器      : " + Sanitizer.forReport(snapshot.serverName(), 120));
+        out.println("  工具数      : " + snapshot.tools().size());
+        out.println("  脱敏模式    : " + (redact ? "是（不可作基线指纹证据）" : "否（含完整定义）"));
+        return EXIT_OK;
+    }
+
+    private static int runAllTargets(String command, Path configFile, Path baselineDir,
+                                     Finding.Severity failOn, ChangeSeverity failOnChange,
+                                     boolean acceptChanges, boolean riskOnly,
+                                     java.time.Duration timeout, java.time.Duration connectTimeout,
+                                     java.time.Duration requestTimeout, Integer maxTools,
+                                     Reports reports, PrintStream out, PrintStream err) {
+        List<ServerTarget> targets;
+        try {
+            targets = ServerTarget.readAll(configFile);
+        } catch (Exception e) {
+            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(e.getMessage(), 240));
+            reports.inputErrors.add(new ScanError(category(EXIT_USAGE), "CONFIG_READ", safeConfigError(e)));
+            return EXIT_USAGE;
+        }
+        int worstCode = EXIT_OK;
+        for (ServerTarget raw : targets) {
+            ServerTarget target = applyOverrides(raw, timeout, connectTimeout, requestTimeout, maxTools);
+            String encodedName = Sanitizer.forUriSegment(target.serverName());
+            String safeName = encodedName.substring(0, Math.min(60, encodedName.length()))
+                    + "-" + ToolFingerprint.sha256(target.identity()).substring(0, 16);
+            Path targetBaseline = baselineDir.resolve(safeName + ".lock.json");
+
+            {
+                try {
+                    validateCredentials(target);
+                } catch (IOException e) {
+                    err.println("mcp-sentinel: [" + Sanitizer.forReport(target.serverName(), 80)
+                            + "] 配置错误: " + Sanitizer.forReport(e.getMessage(), 200));
+                    worstCode = pickWorseExitCode(worstCode, EXIT_USAGE);
+                    reports.failed(target, configFile, targetBaseline, EXIT_USAGE, "CONFIGURATION", e.getMessage());
+                    continue;
+                }
+            }
+
+            Baseline baseline = null;
+            if ("scan".equals(command) && !riskOnly) {
+                BaselineLoad loaded = loadBaseline(targetBaseline, err);
+                if (!loaded.ok()) {
+                    err.println("::error::基线不可用，目标 '" + Sanitizer.forReport(target.serverName(), 80)
+                            + "' 本次扫描给不出漂移结论");
+                    worstCode = pickWorseExitCode(worstCode, EXIT_BASELINE);
+                    reports.failed(target, configFile, targetBaseline, EXIT_BASELINE, "BASELINE_READ", loaded.message());
+                    continue;
+                }
+                baseline = loaded.baseline();
+            }
+
+            McpConnector.Result connection = McpConnector.connect(target);
+            if (!connection.ok()) {
+                err.println("mcp-sentinel: [" + Sanitizer.forReport(target.serverName(), 80)
+                        + "] 连接服务器失败: " + Sanitizer.forReport(target.redactDiagnostic(connection.error()), 200));
+                worstCode = pickWorseExitCode(worstCode, EXIT_CONNECT);
+                reports.failed(target, configFile, targetBaseline, EXIT_CONNECT, connection.phase(), connection.error());
+                continue;
+            }
+            int reportCount = reports.items.size();
+            int code = "lock".equals(command)
+                    ? doLock(connection.surface(), target.identity(), targetBaseline, out, err)
+                    : doScan(connection.surface(), configFile, targetBaseline, baseline,
+                            null, null, null, failOn, failOnChange, acceptChanges, riskOnly,
+                            target.identity(), null, null, true, reports, out, err);
+            if ("scan".equals(command) && reports.items.size() == reportCount)
+                reports.failed(target, configFile, targetBaseline, code, "SCAN", "目标检查未完成");
+            worstCode = pickWorseExitCode(worstCode, code);
+        }
+        return worstCode;
+    }
+
+    private static int pickWorseExitCode(int current, int candidate) {
+        if (candidate == EXIT_OK) return current;
+        if (current == EXIT_OK) return candidate;
+        List<Integer> priority = List.of(EXIT_BASELINE, EXIT_DRIFT, EXIT_FINDINGS, EXIT_CONNECT, EXIT_USAGE, EXIT_OUTPUT);
+        int curRank = priority.indexOf(current);
+        int candRank = priority.indexOf(candidate);
+        return (candRank >= 0 && (curRank < 0 || candRank < curRank)) ? candidate : current;
+    }
+
+    private static int doLock(ToolSurface surface, String targetId, Path file, PrintStream out, PrintStream err) {
+        try {
+            Baseline.of(surface, targetId, List.of()).writeExpected(file, null);
+        } catch (Exception e) {
+            err.println("mcp-sentinel: 写入基线失败: " + Sanitizer.forReport(e.getMessage(), 240));
+            return EXIT_USAGE;
+        }
+        out.println("已锁定工具面基线: " + display(file));
+        out.println("  服务器      : " + Sanitizer.forReport(surface.serverName(), 120));
         out.println("  工具数      : " + surface.tools().size());
         out.println("  工具面指纹  : " + surface.shortFingerprint());
         out.println();
@@ -321,10 +686,25 @@ public final class Main {
     }
 
     private static int doScan(ToolSurface surface, Path configFile, Path baselineFile,
-                              Baseline loadedBaseline, Path outFile, Path sarifFile,
+                              Baseline loadedBaseline, Path outFile, Path jsonFile, Path sarifFile,
                               Finding.Severity failOn, ChangeSeverity failOnChange,
                               boolean acceptChanges, boolean riskOnly,
-                              PrintStream out, PrintStream err) {
+                              String targetId, String expectedBaseline, String expectedSurface,
+                              boolean fingerprintsAvailable,
+                              Reports reports, PrintStream out, PrintStream err) {
+        if (!riskOnly && !loadedBaseline.targetId().equals(targetId)) {
+            err.println("mcp-sentinel: 基线属于其他配置目标，请选择正确基线；文件未改动");
+            reports.failed(ScanReport.of(surface, List.of(), null, loadedBaseline.surfaceFingerprint(), targetId, fingerprintsAvailable),
+                    configFile, baselineFile, EXIT_BASELINE, true, "BASELINE_TARGET", "基线目标标识与当前目标不一致");
+            return EXIT_BASELINE;
+        }
+        if (acceptChanges && (!loadedBaseline.surfaceFingerprint().equals(expectedBaseline)
+                || !surface.fingerprint().equals(expectedSurface))) {
+            err.println("mcp-sentinel: 当前基线或工具面与已审阅指纹不一致；未批准，请重新扫描");
+            reports.failed(ScanReport.of(surface, List.of(), null, loadedBaseline.surfaceFingerprint(), targetId, fingerprintsAvailable),
+                    configFile, baselineFile, EXIT_BASELINE, true, "APPROVAL", "基线或工具面指纹与已审阅值不一致，未写回基线");
+            return EXIT_BASELINE;
+        }
         List<Finding> findings = RiskRules.evaluate(surface);
         Baseline baseline = loadedBaseline;
         SurfaceDiff diff = null;
@@ -332,7 +712,6 @@ public final class Main {
         if (riskOnly) {
             out.println("模式：--risk-only（显式跳过基线比对，本次不检测工具面漂移）");
         } else {
-            // 基线已在连接服务器之前校验过；这里只做比对
             diff = baseline.diffAgainst(surface);
         }
 
@@ -341,107 +720,56 @@ public final class Main {
                 err.println("mcp-sentinel: --accept-changes 需要先有一份可读的基线文件");
                 return EXIT_USAGE;
             }
-            // 批准 = 把当前工具面升级为新的基线，并把这次的变更指纹记下来。
-            // 记下来是为了让同一条变更在后续提交里仍然算已批准——审批不该因为
-            // "改了别的东西"而失效。指纹含变更后的内容摘要，所以"批准后再悄悄改一次"
-            // 会得到不同的指纹，仍然会拦下。
             List<Change> accepted = diff == null ? List.of() : diff.changes();
             Baseline before = baseline;
-            Baseline updated = Baseline.of(surface, mergeAccepted(baseline, diff));
-            // 没有实质变更时**不写文件**。写回会把 generatedAt 刷新一遍，于是 `git status`
-            // 出现一条改动、diff 里却只有一行时间戳——评审者看到一次"工具面好像变了"，
-            // 而实际上什么都没变。基线 diff 是这个工具唯一能被评审的东西，
-            // 让"没变"看起来像"变了"，和让"变了"看起来像"没变"一样是在破坏它。
-            //
-            // ⚠️ 写回的前提是**真的有一条变更被批准**，不是"文件内容看起来变了"：
-            // 这两个判据来自不同的地方（`accepted` 来自变更集，`sameContentAs` 来自指纹），
-            // 而分级器**会漏掉**它不认识的改动。实测（2026-09-22）：嵌套 schema 变更
-            // 与指纹不一致时，工具会一边打印「（无——工具面与基线一致，没有任何变更需要批准）」
-            // 一边把这**没被任何人批准**的工具面写进锁文件——评审者看到一条锁文件 diff，
-            // 而工具的措辞让他以为是噪音。那正好破坏了"审批可继承"这条卖点的证据链。
-            //
-            // 所以门槛取两者的交集；指纹变了却没有可批准的变更时（现在不该发生，
-            // 因为 `Baseline.diffAgainst` 会补一条 UNGRADED_SCHEMA_CHANGE），**拒绝写回**。
+            Baseline updated = Baseline.of(surface, targetId, mergeAccepted(baseline, diff, surface.fingerprint()));
             boolean contentChanged = !updated.sameContentAs(before);
             boolean written = !accepted.isEmpty() && contentChanged;
             if (written) {
                 try {
-                    updated.write(baselineFile);
+                    updated.writeExpected(baselineFile, baseline);
                     out.println("已接受 " + accepted.size() + " 处变更并写回基线: "
-                            + baselineFile.toAbsolutePath());
+                            + display(baselineFile));
                 } catch (IOException e) {
-                    err.println("mcp-sentinel: 写回基线失败: " + e.getMessage());
-                    return EXIT_USAGE;
+                    err.println("mcp-sentinel: 写回基线失败: " + Sanitizer.forReport(e.getMessage(), 240));
+                    reports.failed(ScanReport.of(surface, findings, diff, baseline.surfaceFingerprint(), targetId, fingerprintsAvailable),
+                            configFile, baselineFile, EXIT_BASELINE, true, "BASELINE_WRITE", e.getMessage());
+                    return EXIT_BASELINE;
                 }
             } else if (contentChanged) {
                 err.println("mcp-sentinel: 工具面指纹变了，却没有任何一条变更可以被批准——"
-                        + "这不该发生（分级器至少会补一条 UNGRADED_SCHEMA_CHANGE）。"
                         + "基线未改动；请重新运行 lock 建立新基线，或报告这个输入。");
                 return EXIT_USAGE;
             } else {
                 out.println("没有需要批准的变更——工具面与基线一致，基线文件未改动。");
             }
             printAcceptanceSummary(accepted, before, updated, findings, failOn, written, out);
-            baseline = null;
-            diff = null;
+            diff = new SurfaceDiff(accepted, accepted.stream().map(Change::digest).collect(java.util.stream.Collectors.toSet()), diff.paths());
         }
 
-        ScanReport report = new ScanReport(surface.serverName(), surface.fingerprint(),
-                surface.tools().size(), findings, diff);
+        ScanReport report = ScanReport.of(surface, findings, diff,
+                baseline == null ? "" : baseline.surfaceFingerprint(), targetId, fingerprintsAvailable);
         String rendered = report.render();
         out.println(rendered);
 
-        boolean outputFailed = false;
-        if (outFile != null) {
-            // 旧版把 --out 解析出来却在 scan 里从不使用——不报错、不警告、不产生文件
-            try {
-                if (outFile.getParent() != null) {
-                    Files.createDirectories(outFile.getParent());
-                }
-                Files.writeString(outFile, rendered, StandardCharsets.UTF_8);
-                err.println("报告已写出: " + outFile.toAbsolutePath());
-            } catch (IOException e) {
-                err.println("mcp-sentinel: 写出报告失败: " + e.getMessage());
-                outputFailed = true;
-            }
-        }
-
-        if (sarifFile != null) {
-            try {
-                // 位置必须落在仓库内真实存在的文件上，否则 GitHub Code Scanning
-                // 不会显示这些结果（官方规则 GH1005）。有基线就指向基线并精确到行。
-                SarifWriter.write(report, SarifWriter.Source.fromFiles(configFile, baselineFile), sarifFile);
-                out.println("SARIF 已写出: " + sarifFile.toAbsolutePath()
-                        + "（可上传到 GitHub Code Scanning，发现会以行内注解出现在 PR 上）");
-            } catch (Exception e) {
-                // 旧版只打一行 stderr 就继续，最终可能以 0 退出。SARIF 是 CI 真正消费的产物，
-                // 写不出来等于这次扫描没有结果上传，却报成功。
-                err.println("mcp-sentinel: 写出 SARIF 失败: " + e.getMessage());
-                outputFailed = true;
-            }
-        }
-
         List<Change> blocking = diff == null ? List.of() : diff.blocking(failOnChange);
         boolean hasFindings = report.hasAtLeast(failOn);
+        int preliminaryExit = !blocking.isEmpty() ? EXIT_DRIFT : (hasFindings ? EXIT_FINDINGS : EXIT_OK);
+        String errorCategory = switch (preliminaryExit) {
+            case EXIT_DRIFT -> "UNAPPROVED_DRIFT";
+            case EXIT_FINDINGS -> "STATIC_RISK_FINDINGS";
+            default -> "NONE";
+        };
+        if (preliminaryExit != EXIT_OK) report = report.withErrors(List.of(new ScanError(errorCategory,
+                "POLICY_CHECK", !blocking.isEmpty() ? "存在 " + blocking.size() + " 处达到阈值的未批准变化" : "静态风险达到 " + failOn + " 阈值")));
 
-        /*
-         * 注解报**实际分级**，不报阈值。
-         *
-         * 曾经这里写的是 `failOn` / `failOnChange`，也就是「达到 BREAKING 级别」
-         * 这种说法——那只是**阻断阈值**（默认值），不是这次变更的级别。
-         * 实测：悄悄改一条工具描述后，报告正文正确写出
-         * `[DANGEROUS] DESCRIPTION_CHANGED`，而 CI 注解说的是
-         * 「达到 BREAKING 级别」——把最严重的一档说低了一级。
-         *
-         * 对一个以「按 MCP 特有风险轴精确分级」为卖点的工具，注解低报会让人
-         * 按错误的严重度处置。阈值同时保留，因为「为什么被拦」也是读者要的信息。
-         */
+        reports.items.add(new ReportItem(report, configFile, riskOnly ? null : baselineFile, preliminaryExit, true));
+
         if (hasFindings) {
             err.println("::error::存在风险项，最高 " + report.highestSeverity()
                     + " 级别（阻断阈值 " + failOn + "）");
         }
         if (!blocking.isEmpty()) {
-            // ChangeSeverity 的顺序是 INFO < BREAKING < DANGEROUS，ordinal 越大越严重
             ChangeSeverity worst = blocking.stream()
                     .map(Change::severity)
                     .max(Comparator.comparingInt(Enum::ordinal))
@@ -449,69 +777,45 @@ public final class Main {
             err.println("::error::MCP 工具面有 " + blocking.size() + " 处未批准的变更，最高 "
                     + worst + " 级别（共 " + diff.totalChanges() + " 处变化，阻断阈值 " + failOnChange + "）");
         }
-        if (outputFailed) {
-            err.println("::error::输出产物写入失败，本次扫描结果不完整（CI 拿不到报告/SARIF）");
-        }
         if (!blocking.isEmpty()) {
             return EXIT_DRIFT;
         }
         if (hasFindings) {
             return EXIT_FINDINGS;
         }
-        return outputFailed ? EXIT_OUTPUT : EXIT_OK;
+        return EXIT_OK;
     }
 
-    /** 基线加载结果：要么可用，要么已经打印了失败原因 */
-    private record BaselineLoad(Baseline baseline) {
+    private record BaselineLoad(Baseline baseline, String message) {
         boolean ok() {
             return baseline != null;
         }
     }
 
-    /**
-     * 读基线，任何一种读不出来的情况都返回失败。
-     *
-     * <p>刻意<b>不</b>在这里重新生成基线：自动重建会把"基线被换掉了"这件事
-     * 变成一次安静的自愈，而基线本身就是"当初批准的是什么"的证据。
-     */
     private static BaselineLoad loadBaseline(Path baselineFile, PrintStream err) {
         if (!Files.exists(baselineFile)) {
-            err.println("mcp-sentinel: 找不到基线文件 " + baselineFile.toAbsolutePath()
+            err.println("mcp-sentinel: 找不到基线文件 " + display(baselineFile)
                     + "，无法检测工具面漂移。");
-            err.println("  首次使用：运行 `mcp-sentinel lock --config <配置> --out " + baselineFile
+            err.println("  首次使用：运行 `mcp-sentinel lock --config <配置> --out " + display(baselineFile)
                     + "`，并把生成的基线提交进版本库。");
             err.println("  若你确实只想跑静态风险规则、不做漂移检测：显式加 `--risk-only`。");
-            return new BaselineLoad(null);
+            return new BaselineLoad(null, "基线文件不存在，必须先建立并审阅可信基线");
         }
         if (!Files.isRegularFile(baselineFile)) {
-            err.println("mcp-sentinel: 基线路径不是普通文件：" + baselineFile.toAbsolutePath()
+            err.println("mcp-sentinel: 基线路径不是普通文件：" + display(baselineFile)
                     + "（可能是目录、符号链接指向的目标不存在，或权限不足）。");
-            return new BaselineLoad(null);
+            return new BaselineLoad(null, "基线路径不是普通文件或无法访问");
         }
         try {
-            return new BaselineLoad(Baseline.read(baselineFile));
+            return new BaselineLoad(Baseline.read(baselineFile), "");
         } catch (Exception e) {
-            err.println("mcp-sentinel: 基线不可用，漂移检测无法进行：" + e.getMessage());
+            err.println("mcp-sentinel: 基线不可用，漂移检测无法进行：" + Sanitizer.forReport(e.getMessage(), 300));
             err.println("  不会自动重建基线——请人工确认这份文件为何不可读，"
                     + "再决定是否重新运行 `mcp-sentinel lock`。");
-            return new BaselineLoad(null);
+            return new BaselineLoad(null, e.getMessage());
         }
     }
 
-    /**
-     * 把"这次批准了什么"完整打出来。
-     *
-     * <p>批准动作会改写基线文件，而基线是"当初批准的是什么"的证据。如果只在提交里看到
-     * 一个 `mcp-sentinel.lock.json` 的二进制式 diff，评审者实际上没有任何可审的东西——
-     * 他看不出被批准的是「加了个可选参数」还是「描述被换成了另一段话」。
-     *
-     * <p>所以这里把三件事摊开：批准了哪些工具、每条变更的级别与前后摘要、
-     * 以及**基线的新指纹**（评审者据此确认"我批准的确实是这一版工具面"）。
-     *
-     * <p><b>静态风险发现不在批准范围内。</b>它们描述的是当前工具面本身有问题，
-     * 而不是"和上次不一样"。批准基线不会、也不该让它们消失——这一点必须说出来，
-     * 否则很容易被误以为"批准过就没事了"。
-     */
     private static void printAcceptanceSummary(List<Change> accepted, Baseline before, Baseline after,
                                                List<Finding> findings,
                                                Finding.Severity failOn, boolean written,
@@ -522,7 +826,7 @@ public final class Main {
         }
 
         out.println();
-        out.println("本次批准的变更（写进基线的 acceptedChanges，后续提交里继续算已批准）：");
+        out.println("本次批准的变更（审计记录绑定目标及前后快照，不批准其他上下文的变化）：");
         if (accepted.isEmpty()) {
             out.println("  （无——工具面与基线一致，没有任何变更需要批准）");
         }
@@ -531,10 +835,10 @@ public final class Main {
             bySeverity.merge(change.severity().name(), 1, Integer::sum);
             String was = previousFingerprints.getOrDefault(change.toolName(), "-");
             out.println("  [%s] %-28s %-22s %s → %s".formatted(
-                    change.severity(), change.id(), change.describe(),
+                    change.severity(), change.id(), Sanitizer.forReport(change.describe(), 80),
                     shortDigest(was), shortDigest(change.afterDigest())));
             if (!change.detail().isBlank()) {
-                out.println("      " + change.detail());
+                out.println("      " + Sanitizer.forReport(change.detail(), 250));
             }
             out.println("      变更指纹 " + change.digest());
         }
@@ -542,8 +846,6 @@ public final class Main {
 
         out.println();
         out.println("工具面指纹   : " + shortFingerprint(before) + " → " + shortFingerprint(after));
-        // 标签以前写的是"基线文件"，值却是时间戳——两者对不上，读者会以为那是个路径。
-        // 且只在真的写回时才报时间：没写回就没有新的写回时间可言。
         if (written) {
             out.println("基线写回时间 : " + after.generatedAt());
         } else {
@@ -580,8 +882,7 @@ public final class Main {
         return digest.substring(0, Math.min(16, digest.length()));
     }
 
-    /** 把这次被批准的变更指纹并入基线原有的已批准集合，按指纹去重 */
-    private static List<Baseline.AcceptedChange> mergeAccepted(Baseline baseline, SurfaceDiff diff) {
+    private static List<Baseline.AcceptedChange> mergeAccepted(Baseline baseline, SurfaceDiff diff, String afterFingerprint) {
         Map<String, Baseline.AcceptedChange> merged = new LinkedHashMap<>();
         for (Baseline.AcceptedChange change : baseline.acceptedChanges()) {
             merged.put(change.digest(), change);
@@ -589,18 +890,177 @@ public final class Main {
         if (diff != null) {
             for (Change change : diff.changes()) {
                 merged.putIfAbsent(change.digest(),
-                        new Baseline.AcceptedChange(change.id(), change.toolName(), change.digest()));
+                        new Baseline.AcceptedChange(change.id(), change.toolName(), change.digest(),
+                                baseline.targetId(), baseline.surfaceFingerprint(), afterFingerprint));
             }
         }
         return new ArrayList<>(merged.values());
     }
 
-    private static String require(String[] args, int index, PrintStream err) {
-        if (index >= args.length) {
-            err.println("mcp-sentinel: 参数缺值");
-            return "";
+    private static String requireValue(String[] args, int index, String option, PrintStream err) {
+        if (index >= args.length || args[index].startsWith("--")) {
+            err.println("mcp-sentinel: 选项 " + option + " 参数缺值");
+            return null;
         }
         return args[index];
+    }
+
+    private static boolean samePath(Path a, Path b) throws IOException {
+        return a.toAbsolutePath().normalize().equals(b.toAbsolutePath().normalize())
+                || (Files.exists(a) && Files.exists(b) && Files.isSameFile(a, b));
+    }
+
+    private static String display(Path path) {
+        return Sanitizer.forReport(path.toAbsolutePath().toString(), 300);
+    }
+
+    private static void validateCredentials(ServerTarget target) throws IOException {
+        if (target.transport() == ServerTarget.Transport.STREAMABLE_HTTP) target.resolveHeaders(System::getenv);
+        else target.resolveEnvironment(System::getenv);
+    }
+
+    private static String safeConfigError(Exception error) {
+        if (error instanceof java.nio.file.NoSuchFileException) return "配置文件不存在";
+        if (error instanceof com.fasterxml.jackson.core.JsonProcessingException) return "配置 JSON 格式无效";
+        // A parser diagnostic may contain an input fragment; configuration values
+        // have not yet been loaded, so do not echo that fragment into a report.
+        return "配置无法读取或字段不符合支持的格式（" + error.getClass().getSimpleName() + "）";
+    }
+
+    private static String optionValue(String[] args, String key) {
+        String value = null;
+        for (int i = 1; i + 1 < args.length; i++) if (key.equals(args[i]) && !args[i + 1].startsWith("--")) value = args[i + 1];
+        return value;
+    }
+
+    private static String category(int code) {
+        return switch (code) {
+            case EXIT_OK -> "NONE";
+            case EXIT_USAGE -> "USAGE_OR_CONFIG_ERROR";
+            case EXIT_CONNECT -> "CONNECTION_FAILED";
+            case EXIT_FINDINGS -> "STATIC_RISK_FINDINGS";
+            case EXIT_DRIFT -> "UNAPPROVED_DRIFT";
+            case EXIT_BASELINE -> "BASELINE_UNAVAILABLE";
+            default -> "OUTPUT_WRITE_FAILED";
+        };
+    }
+
+    /** Export once, after the final status is known; failures also get a report. */
+    private static int writeReports(String[] args, Reports reports, int code, PrintStream out, PrintStream err) {
+        String jsonPath = optionValue(args, "--json");
+        String sarifPath = optionValue(args, "--sarif");
+        String textPath = optionValue(args, "--out");
+        if (jsonPath == null && sarifPath == null && textPath == null) return code;
+        // Do not turn a rejected aliasing invocation into an overwrite in the
+        // failure-report path. The same protection applies to hard links.
+        try {
+            List<Path> destinations = new ArrayList<>();
+            for (String value : new String[]{jsonPath, sarifPath, textPath}) {
+                if (value == null) continue;
+                Path path = Path.of(value);
+                for (String key : List.of("--config", "--snapshot", "--baseline")) {
+                    String input = optionValue(args, key);
+                    if (input != null && samePath(path, Path.of(input))) return EXIT_USAGE;
+                }
+                if (samePath(path, Path.of("mcp-sentinel.lock.json"))) return EXIT_USAGE;
+                for (ReportItem item : reports.items) {
+                    if ((item.source != null && samePath(path, item.source))
+                            || (item.baseline != null && samePath(path, item.baseline))) return EXIT_USAGE;
+                }
+                for (Path existing : destinations) if (samePath(path, existing)) return EXIT_USAGE;
+                destinations.add(path);
+            }
+        } catch (Exception e) {
+            err.println("mcp-sentinel: 报告路径无效: " + Sanitizer.forReport(e.getMessage()));
+            return pickWorseExitCode(code, EXIT_OUTPUT);
+        }
+        if (reports.items.isEmpty()) reports.items.add(new ReportItem(
+                new ScanReport("unavailable", "", 0, List.of(), null).withErrors(reports.inputErrors.isEmpty()
+                        ? List.of(new ScanError(category(code), "ARGUMENTS", "命令参数校验失败，请检查必需选项、互斥选项及输入路径"))
+                        : reports.inputErrors), null, null, code, false));
+        List<String> outputErrors = new ArrayList<>();
+        if (textPath != null) {
+            try {
+                StringBuilder text = new StringBuilder();
+                for (ReportItem item : reports.items) text.append(item.complete ? item.report.render()
+                        : "扫描未完成，错误类别: " + category(item.code) + "\n");
+                AtomicFiles.write(Path.of(textPath), text.toString(), p -> { });
+                err.println("报告已写出: " + Sanitizer.forReport(Path.of(textPath).toAbsolutePath().toString(), 240));
+            } catch (Exception e) {
+                err.println("mcp-sentinel: 写出报告失败: " + Sanitizer.forReport(e.getMessage(), 240));
+                outputErrors.add("TEXT");
+            }
+        }
+        if (sarifPath != null) {
+            try {
+                ObjectNode root = JSON.createObjectNode();
+                root.put("$schema", "https://json.schemastore.org/sarif-2.1.0.json");
+                root.put("version", "2.1.0");
+                var runs = root.putArray("runs");
+                for (ReportItem item : reports.items) {
+                    SarifWriter.Source source = item.source == null ? SarifWriter.Source.of("mcp-sentinel.lock.json")
+                            : SarifWriter.Source.fromFiles(item.source, item.complete ? item.baseline : null);
+                    ObjectNode run = (ObjectNode) JSON.readTree(SarifWriter.render(item.report, source)).path("runs").get(0);
+                    run.putObject("automationDetails").put("id", item.report.targetId());
+                    var invocation = run.putArray("invocations").addObject();
+                    invocation.put("executionSuccessful", item.complete && item.code != EXIT_BASELINE && item.code != EXIT_USAGE && item.code != EXIT_CONNECT);
+                    invocation.put("exitCode", item.code);
+                    runs.add(run);
+                }
+                AtomicFiles.write(Path.of(sarifPath), JSON.writerWithDefaultPrettyPrinter().writeValueAsString(root), p -> { });
+                out.println("SARIF 已写出: " + Sanitizer.forReport(Path.of(sarifPath).toAbsolutePath().toString(), 240));
+            } catch (Exception e) {
+                err.println("mcp-sentinel: 写出 SARIF 失败: " + Sanitizer.forReport(e.getMessage(), 240));
+                outputErrors.add("SARIF");
+            }
+        }
+        int finalCode = outputErrors.isEmpty() ? code : pickWorseExitCode(code, EXIT_OUTPUT);
+        if (jsonPath != null) {
+            try {
+                Finding.Severity risk = Finding.Severity.HIGH;
+                ChangeSeverity drift = ChangeSeverity.BREAKING;
+                try {
+                    if (optionValue(args, "--fail-on") != null) risk = Finding.Severity.valueOf(optionValue(args, "--fail-on").toUpperCase(Locale.ROOT));
+                    if (optionValue(args, "--fail-on-change") != null) drift = ChangeSeverity.parse(optionValue(args, "--fail-on-change"));
+                } catch (IllegalArgumentException ignored) { }
+                var targets = JSON.createArrayNode();
+                for (ReportItem item : reports.items) {
+                    ObjectNode node = (ObjectNode) JSON.readTree(item.report.renderJson(risk, drift, item.code, category(item.code)));
+                    node.put("collectionStatus", item.complete ? "COMPLETE" : "FAILED");
+                    targets.add(node);
+                }
+                boolean multiTarget = java.util.Arrays.asList(args).contains("--all-targets");
+                ObjectNode root = multiTarget ? JSON.createObjectNode() : (ObjectNode) targets.get(0);
+                if (multiTarget) {
+                    root.put("reportVersion", ScanReport.REPORT_VERSION);
+                    root.put("toolVersion", Version.value());
+                    root.put("mode", "MULTI_TARGET");
+                    root.set("targets", targets);
+                    root.put("collectionStatus", reports.items.stream().allMatch(i -> i.complete) ? "COMPLETE"
+                            : reports.items.stream().anyMatch(i -> i.complete) ? "PARTIAL" : "FAILED");
+                    var aggregateErrors = root.putArray("errors");
+                    for (ReportItem item : reports.items) for (ScanError error : item.report.errors())
+                        aggregateErrors.addObject().put("targetId", item.report.targetId()).put("category", error.category())
+                                .put("phase", error.phase()).put("message", error.message());
+                }
+                root.put("exitCode", finalCode);
+                root.put("status", finalCode == EXIT_OK ? "PASS" : "FAIL");
+                root.put("errorCategory", category(finalCode));
+                var errors = root.putArray("outputErrors");
+                outputErrors.forEach(errors::add);
+                var failures = (com.fasterxml.jackson.databind.node.ArrayNode) root.withArray("errors");
+                for (String kind : outputErrors) failures.addObject().put("category", category(EXIT_OUTPUT))
+                        .put("phase", "REPORT_WRITE").put("message", kind + " 报告无法写入目标路径");
+                root.put("generatedAt", java.time.Instant.now().toString());
+                AtomicFiles.write(Path.of(jsonPath), JSON.writerWithDefaultPrettyPrinter().writeValueAsString(root), p -> { });
+                err.println("JSON 报告已写出: " + Sanitizer.forReport(Path.of(jsonPath).toAbsolutePath().toString(), 240));
+            } catch (Exception e) {
+                outputErrors.add("JSON");
+                finalCode = pickWorseExitCode(finalCode, EXIT_OUTPUT);
+            }
+        }
+        if (!outputErrors.isEmpty()) err.println("::error::输出产物写入失败: " + outputErrors);
+        return finalCode;
     }
 
     private static void usage(PrintStream err) {
@@ -608,48 +1068,34 @@ public final class Main {
                 mcp-sentinel - MCP 工具面安全扫描器
 
                 用法:
-                  mcp-sentinel lock --config <配置> [--out <基线文件>]
-                  mcp-sentinel scan --config <配置> [选项]
+                  mcp-sentinel lock --config <配置> [--server <名称>] [--out <基线文件>]
+                  mcp-sentinel scan (--config <配置> | --snapshot <快照文件>) [选项]
+                  mcp-sentinel snapshot --config <配置> [--server <名称>] --out <快照文件> [--redact]
+                  mcp-sentinel import-config --config <客户端配置> [--server <名称>] [--out <文件>]
                   mcp-sentinel --version                     打印本产物自带的版本号
 
                 选项:
                   --baseline <文件>        基线的位置（默认 mcp-sentinel.lock.json）
+                  --server <名称>          从含 mcpServers 的多目标配置中选择指定目标
+                  --all-targets            扫描或锁定 mcpServers 中的全部启用目标
+                  --baseline-dir <目录>    配合 --all-targets 指定各目标基线所在目录（默认当前目录）
                   --risk-only              只跑静态风险规则，不做漂移检测（显式选择）
-                  --out <文件>             把报告另存一份
+                  --out <文件>             把文本报告、基线或导入配置另存一份
+                  --json <文件>            输出版本化机器可读 JSON 扫描报告
                   --sarif <文件>           输出 SARIF 2.1.0
+                  --redact                 配合 snapshot 导出脱敏快照（抹去标题与描述）
                   --fail-on LEVEL          风险规则在哪个级别阻断（HIGH / MEDIUM / LOW，默认 HIGH）
                   --fail-on-change LEVEL   工具面变更在哪个级别阻断
                                            （INFO / BREAKING / DANGEROUS，默认 BREAKING）
                   --accept-changes         批准本次变更并写回基线（有意的迭代走这一步）
+                  --expect-baseline SHA    已审阅旧基线的完整指纹（批准时必需）
+                  --expect-surface SHA     已审阅新工具面的完整指纹（批准时必需）
                   --timeout N              兼容旧用法：同时设置连接与请求超时秒数
                   --connect-timeout N      HTTP 建连超时秒数（默认 20）
                   --request-timeout N      MCP 初始化与工具列表请求超时秒数（默认 20）
+                  --max-tools N            单目标允许的最大工具数上限（默认 1000）
 
-                哪些选项属于哪个子命令:
-                  --out 两者都有意义（lock 用它指定基线的输出位置）。
-                  --risk-only / --sarif / --fail-on / --fail-on-change / --accept-changes
-                  只属于 scan——lock 不扫描、不判风险、不比对漂移。写在 lock 上会报错，
-                  而不是被静默忽略：一个没生效的 --sarif 会让脚本以为报告已经落盘。
-
-                配置（与主流 MCP 客户端格式一致）:
-                  { "server": "my-server", "command": "java", "args": ["-jar", "server.jar"] }
-
-                fail-closed:
-                  scan 默认要求基线可用。基线缺失 / 不是普通文件 / 不可读 / 损坏 /
-                  版本不兼容 / 内容不全时一律退出 5，不会退化成"只做风险扫描然后返回 0"。
-                  确实只要静态规则时，用 --risk-only 显式声明。
-
-                它检测什么:
-                  · 工具描述里夹带面向模型的指令（tool poisoning / OWASP MCP03）
-                  · 零宽字符隐藏指令、超长 base64 载荷
-                  · schema 过宽（无参数约束 / additionalProperties / 未约束字符串）
-                  · 危险参数名（command / exec / sql …）
-                  · 描述自称只读但 schema 含写入语义参数
-                  · 工具影子（与既有工具高度相似的定义）、工具名重复
-                  · 工具面相对基线的变更（rug pull：名字没变、定义被改写），并按
-                    「扩大攻击面 / 破坏调用方 / 纯信息性」三档分级
-
-                退出码: 0 通过 · 1 用法错误 · 2 连接失败 · 3 命中风险 · 4 工具面有未批准变更
+                退出码: 0 通过 · 1 用法或配置错误 · 2 连接失败 · 3 命中风险 · 4 工具面有未批准变更
                         · 5 基线不可用（漂移检测未生效）· 6 输出产物写入失败
                 """);
     }

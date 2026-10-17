@@ -47,7 +47,7 @@ public final class ToolFingerprint {
                 ? fullFingerprint : fullFingerprint.substring(0, SHORT_LENGTH);
     }
 
-    static String sha256(String text) {
+    public static String sha256(String text) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(text.getBytes(StandardCharsets.UTF_8));

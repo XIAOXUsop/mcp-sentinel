@@ -98,7 +98,7 @@ class ChangeSemanticsTest {
 
     @Test
     void wideningChangesAreDangerous() {
-        assertEquals("SCHEMA_OPENED", single(
+        assertEquals("SCHEMA_DEFAULT_EXPLICIT", single(
                 tool("t", "T", "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}}}"),
                 tool("t", "T", "{\"type\":\"object\",\"properties\":{\"a\":{\"type\":\"string\"}},"
                         + "\"additionalProperties\":true}")).id());
@@ -154,7 +154,7 @@ class ChangeSemanticsTest {
     /** 类型变成 string（最宽的基本类型），或单一类型变成联合类型——都是放宽 */
     @Test
     void typeWideningIsDistinguishedFromTypeChange() {
-        assertEquals("PARAM_TYPE_WIDENED", single(
+        assertEquals("PARAM_TYPE_CHANGED", single(
                 tool("t", "T", "{\"properties\":{\"p\":{\"type\":\"integer\"}}}"),
                 tool("t", "T", "{\"properties\":{\"p\":{\"type\":\"string\"}}}")).id());
 
@@ -253,7 +253,8 @@ class ChangeSemanticsTest {
 
         Change change = blocked.changes().get(0);
         Baseline withApproval = Baseline.of(ToolSurface.of("srv", List.of(before)),
-                List.of(new Baseline.AcceptedChange(change.id(), change.toolName(), change.digest())));
+                List.of(new Baseline.AcceptedChange(change.id(), change.toolName(), change.digest(), plain.targetId(),
+                        plain.surfaceFingerprint(), ToolSurface.of("srv", List.of(after)).fingerprint())));
         SurfaceDiff accepted = withApproval.diffAgainst(ToolSurface.of("srv", List.of(after)));
 
         assertEquals(1, accepted.totalChanges(), "已批准的变更仍然出现在变更集里");

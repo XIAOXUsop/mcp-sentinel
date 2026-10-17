@@ -9,6 +9,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.channels.FileChannel;
+import java.nio.channels.OverlappingFileLockException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -18,24 +21,18 @@ import java.util.TreeMap;
 import java.util.function.Function;
 
 /**
- * 工具面基线：把"服务器当初长什么样"变成一份可提交、可评审的文件。
+ * 工具面基线：把"服务器当初长什么样"变成一份可提交、可评审、自校验的文件。
  *
- * <p>基线应当**提交进版本库**。这样"工具定义被改了"就会像"代码被改了"一样
- * 出现在 diff 与评审里——MCP 的 rug pull 攻击恰恰发生在没人看的运行时，
- * 把它搬进代码评审是最省事也最有效的防线。
- *
- * <p><b>为什么存完整定义而不只是指纹</b>：
+ * <p>信任链与完整性保护（W03 / F05 / F08）：
  * <ul>
- *   <li>只有指纹算不出"加了可选参数"与"加了必填参数"的区别——两者都只是"指纹变了"，
- *       而前者扩大攻击面、后者破坏调用方，安全含义完全相反；</li>
- *   <li>它同时是"**当初批准的是什么**"的证据：评审时能看到被批准的原始定义，
- *       而不只是一串哈希。</li>
+ *   <li>读取时开启 Jackson 严格重复键检测（{@code STRICT_DUPLICATE_DETECTION}），拒绝重复字段覆盖；</li>
+ *   <li>严格匹配 {@code version == CURRENT_VERSION} 与 {@code schemaVersion == SchemaCanonicalizer.VERSION}，
+ *       显式拒绝旧版本与未来版本（如 {@code version=999}）；</li>
+ *   <li>读取时根据保存的工具定义重新计算每个工具的 SHA-256 指纹及整体 {@code surfaceFingerprint}，
+ *       任何定义与指纹不一致（改了定义却未更新指纹）一律拒绝加载；</li>
+ *   <li>写入时采用同目录临时文件 → 序列化落盘 → 回读完整性校验 → 原子替换（{@code ATOMIC_MOVE}），
+ *       失败时保留旧基线文件不被破坏。</li>
  * </ul>
- * 代价是文件变大。这是语义分级能力的必要成本。
- *
- * <p><b>为什么工具是数组而不是以名字为键的对象</b>：旧版用 {@code Map<String,String>}，
- * 遇到重名会互相覆盖，于是对其中一个的修改被完全静默地吞掉——实测把投毒工具命名为
- * 与既有工具同名即可永久免疫漂移检测，退出码 0。数组形态天然容纳重名。
  */
 public record Baseline(int version,
                        int schemaVersion,
@@ -43,18 +40,17 @@ public record Baseline(int version,
                        String surfaceFingerprint,
                        String generatedAt,
                        List<ToolEntry> tools,
-                       List<AcceptedChange> acceptedChanges) {
+                       List<AcceptedChange> acceptedChanges,
+                       String targetId) {
 
-    /** 当前基线格式版本。1 = 旧的「以名字为键、只存指纹」形态 */
-    public static final int CURRENT_VERSION = 2;
+    /** v3 保存采集原文，并绑定配置目标与审批的前后快照。 */
+    public static final int CURRENT_VERSION = 3;
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper STRICT_READER = JsonSupport.reader();
 
     /**
      * 一条被锁定的工具。
-     *
-     * @param tool        规范化后的完整定义——语义分级的输入，也是"批准了什么"的证据
-     * @param fingerprint 该工具的指纹，便于人读而不必自己算
      */
     public record ToolEntry(ToolDefinition tool, String fingerprint) {
 
@@ -64,12 +60,10 @@ public record Baseline(int version,
     }
 
     /**
-     * 一条**已被接受**的变更。
-     *
-     * @param digest 变更指纹，跨 commit 稳定——同一个变更在后续提交里仍然算已批准，
-     *               这样就不会因为"改了别的东西"而需要重新批准一遍
+     * 一条<b>已被接受</b>的变更。
      */
-    public record AcceptedChange(String id, String toolName, String digest) {
+    public record AcceptedChange(String id, String toolName, String digest,
+                                 String targetId, String beforeFingerprint, String afterFingerprint) {
     }
 
     public Baseline {
@@ -82,42 +76,57 @@ public record Baseline(int version,
     }
 
     public static Baseline of(ToolSurface surface, List<AcceptedChange> acceptedChanges) {
+        return of(surface, "server:" + surface.serverName(), acceptedChanges);
+    }
+
+    public static Baseline of(ToolSurface surface, String targetId, List<AcceptedChange> acceptedChanges) {
         List<ToolEntry> entries = surface.sorted().stream().map(ToolEntry::of).toList();
         return new Baseline(CURRENT_VERSION, SchemaCanonicalizer.VERSION, surface.serverName(),
-                surface.fingerprint(), Instant.now().toString(), entries, acceptedChanges);
+                surface.fingerprint(), Instant.now().toString(), entries, acceptedChanges, targetId);
     }
 
     // ---------- 读写 ----------
 
     public static Baseline read(Path file) throws IOException {
-        JsonNode root = MAPPER.readTree(Files.readString(file, StandardCharsets.UTF_8));
+        JsonNode root;
+        try {
+            root = STRICT_READER.readTree(Files.readString(file, StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            throw new IOException("基线 JSON 解析失败（可能含语法错误或重复 JSON 键）：" + e.getMessage(), e);
+        }
         if (root == null || !root.isObject()) {
             throw new IOException("基线文件不是 JSON 对象。"
                     + "这通常意味着文件被写坏或被别的工具覆盖。");
         }
-        int version = root.path("version").asInt(1);
+        JsonNode versionNode = root.path("version");
+        int version = versionNode.isIntegralNumber() && versionNode.canConvertToInt() ? versionNode.intValue() : -1;
         if (version < CURRENT_VERSION) {
             throw new IOException("基线格式过旧（v" + version + "，当前 v" + CURRENT_VERSION + "）。"
-                    + "旧格式以工具名为键存储，遇到重名会静默丢失条目——"
-                    + "请重新运行 `mcp-sentinel lock` 生成新基线。");
+                    + "v1 对重名不安全；v2 规范化可能已丢失 oneOf 重复项和 enum 内层顺序，且未绑定目标。"
+                    + "请保留原文件，从可信服务重新运行 `mcp-sentinel lock` 并审阅新基线，不能静默迁移。");
         }
-        int schemaVersion = root.path("schemaVersion").asInt(0);
+        if (version > CURRENT_VERSION || !versionNode.isIntegralNumber()) {
+            throw new IOException("基线格式版本不受支持（v" + versionNode.asText() + "，当前最高支持 v"
+                    + CURRENT_VERSION + "）。请升级 mcp-sentinel，不要用旧版工具读取未来格式。");
+        }
+
+        JsonNode schemaVersionNode = root.path("schemaVersion");
+        int schemaVersion = schemaVersionNode.isIntegralNumber() && schemaVersionNode.canConvertToInt()
+                ? schemaVersionNode.intValue() : 0;
         if (schemaVersion != SchemaCanonicalizer.VERSION) {
             throw new IOException("基线的规范化规则版本为 " + schemaVersion
                     + "，当前为 " + SchemaCanonicalizer.VERSION
-                    + "。规则升级会让旧基线产生一次全量假变更，"
-                    + "请重新运行 `mcp-sentinel lock`（这不是攻击）。");
+                    + "。规则升级会让旧基线产生一次全量假变更（且旧规范化可能已丢失 oneOf 重复分支或 enum 内层顺序），"
+                    + "请从可信服务重新运行 `mcp-sentinel lock`（这不是攻击）。");
         }
 
-        // 内容完整性：能解析成 JSON 不等于能用。
-        // 一份 version 正确但 tools 缺失/为空的基线，会让「所有工具都是新增」或
-        // 「一切正常」这类结论建立在空数据集上——后者尤其危险：扫描通过，门禁形同虚设。
         JsonNode toolsNode = root.path("tools");
         if (!toolsNode.isArray()) {
             throw new IOException("基线缺少 tools 数组（或类型不是数组）。"
                     + "基线必须完整保存被锁定的工具定义，否则无法做漂移比对。");
         }
         List<ToolEntry> tools = new ArrayList<>();
+        List<ToolDefinition> definitions = new ArrayList<>();
         for (JsonNode entry : toolsNode) {
             if (!entry.isObject()) {
                 throw new IOException("基线 tools 中存在非对象条目：" + entry.getNodeType());
@@ -129,44 +138,79 @@ public record Baseline(int version,
                         + "无法确定它是谁，比对结果不可信。");
             }
             if (fingerprint.isBlank()) {
-                throw new IOException("基线中工具 '" + name + "' 缺少 fingerprint 字段——"
+                throw new IOException("基线中工具 '" + Sanitizer.forReport(name, 80) + "' 缺少 fingerprint 字段——"
                         + "「未变更」这一结论正是靠它得出的，缺了它就无法判定。");
             }
-            tools.add(new ToolEntry(ToolDefinition.fromJson(entry), fingerprint));
+            ToolDefinition tool;
+            try {
+                tool = ToolDefinition.fromJson(entry);
+            } catch (Exception e) {
+                throw new IOException("基线中工具 '" + Sanitizer.forReport(name, 80) + "' 的定义非法：" + e.getMessage(), e);
+            }
+            String recomputed = ToolFingerprint.of(tool);
+            if (!recomputed.equals(fingerprint)) {
+                throw new IOException("基线中工具 '" + Sanitizer.forReport(name, 80)
+                        + "' 的定义与记录的 fingerprint 不一致（记录为 "
+                        + ToolFingerprint.shortOf(fingerprint) + "，按定义重算为 "
+                        + ToolFingerprint.shortOf(recomputed) + "）——基线可能被手工篡改或损坏。");
+            }
+            tools.add(new ToolEntry(tool, fingerprint));
+            definitions.add(tool);
         }
+
+        String surfaceFingerprint = root.path("surfaceFingerprint").asText("");
+        String expectedSurfaceFp = ToolFingerprint.ofSurface(definitions);
+        if (surfaceFingerprint.isBlank() || !expectedSurfaceFp.equals(surfaceFingerprint)) {
+            throw new IOException("基线的 surfaceFingerprint 与工具列表重算结果不一致（记录为 "
+                    + ToolFingerprint.shortOf(surfaceFingerprint) + "，重算为 "
+                    + ToolFingerprint.shortOf(expectedSurfaceFp) + "）——基线内容不自洽。");
+        }
+
         List<AcceptedChange> accepted = new ArrayList<>();
-        JsonNode acceptedNode = root.path("acceptedChanges");
-        if (acceptedNode.isArray()) {
+        if (root.has("acceptedChanges") && !root.path("acceptedChanges").isNull()) {
+            JsonNode acceptedNode = root.path("acceptedChanges");
+            if (!acceptedNode.isArray()) {
+                throw new IOException("基线 acceptedChanges 字段不是数组。");
+            }
             for (JsonNode node : acceptedNode) {
-                accepted.add(new AcceptedChange(node.path("id").asText(""),
-                        node.path("tool").asText(""), node.path("digest").asText("")));
+                if (!node.isObject()) {
+                    throw new IOException("基线 acceptedChanges 中存在非对象条目。");
+                }
+                String id = requiredText(node, "id");
+                String toolName = requiredText(node, "tool");
+                String digest = requiredText(node, "digest");
+                if (id.isBlank() || toolName.isBlank() || digest.isBlank()) {
+                    throw new IOException("基线 acceptedChanges 条目缺少 id / tool / digest 字段。");
+                }
+                String approvalTarget = requiredText(node, "targetId");
+                String beforeFp = requiredText(node, "beforeFingerprint");
+                String afterFp = requiredText(node, "afterFingerprint");
+                if (!beforeFp.matches("[0-9a-f]{64}") || !afterFp.matches("[0-9a-f]{64}")
+                        || !digest.matches("[0-9a-f]{32}")) throw new IOException("基线审批指纹格式非法");
+                accepted.add(new AcceptedChange(id, toolName, digest, approvalTarget, beforeFp, afterFp));
             }
         }
         return new Baseline(version, schemaVersion,
-                root.path("server").asText("unknown"),
-                root.path("surfaceFingerprint").asText(""),
-                root.path("generatedAt").asText(""),
-                tools, accepted);
+                requiredText(root, "server"),
+                surfaceFingerprint,
+                requiredText(root, "generatedAt"),
+                tools, accepted, requiredText(root, "targetId"));
+    }
+
+    private static String requiredText(JsonNode root, String key) throws IOException {
+        if (!root.path(key).isTextual() || root.path(key).textValue().isBlank()) {
+            throw new IOException("基线 " + key + " 必须为非空字符串");
+        }
+        return root.get(key).textValue();
     }
 
     /**
      * 除 {@code generatedAt} 外，两份基线是否描述同一个工具面。
-     *
-     * <p><b>为什么需要它</b>：{@code --accept-changes} 在**没有变更可批准**时也会重写基线，
-     * 而重写会让 {@code generatedAt} 变一次——于是 {@code git status} 里出现一条改动，
-     * 但 diff 的内容是一行时间戳。评审者看到的是一次"工具面好像变了"，实际什么都没变。
-     * 这个工具的立身之本是「配置被改了」要像「代码被改了」一样出现在 diff 里；
-     * 反过来让「配置没变」看起来像变了，同样是在破坏这份契约。
-     *
-     * <p><b>为什么不直接用 record 的 equals</b>：{@link #of} 存的是**未经规范化**的原始定义，
-     * 而 {@link #read} 从文件读回的是**已规范化**的形态（写出去时过了
-     * {@link ToolDefinition#toJson()}）。两者描述同一个工具面，JsonNode 却不逐字节相等——
-     * 直接比会让"内容没变"永远判成"变了"，修复等于没做。所以比指纹与规范化文本。
      */
     public boolean sameContentAs(Baseline other) {
         if (version != other.version
                 || schemaVersion != other.schemaVersion
-                || !java.util.Objects.equals(serverName, other.serverName)
+                || !java.util.Objects.equals(targetId, other.targetId)
                 || !java.util.Objects.equals(surfaceFingerprint, other.surfaceFingerprint)
                 || !acceptedChanges.equals(other.acceptedChanges)
                 || tools.size() != other.tools.size()) {
@@ -183,19 +227,23 @@ public record Baseline(int version,
         return true;
     }
 
+    /**
+     * F08 修正：同目录写临时文件 → 回读校验完整性 → 原子替换目标文件。
+     */
     public void write(Path file) throws IOException {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("version", version);
         root.put("schemaVersion", schemaVersion);
         root.put("_comment", "MCP 工具面基线。请提交进版本库：工具定义变化应当出现在 diff 与评审中。"
-                + "存的是规范化后的完整定义——它既是变更分级的输入，也是「当初批准的是什么」的证据。");
+                + "保存已采集定义的原文；指纹单独规范化；审批必须绑定已审阅的前后快照。");
         root.put("server", serverName);
+        root.put("targetId", targetId);
         root.put("surfaceFingerprint", surfaceFingerprint);
         root.put("generatedAt", generatedAt);
 
         ArrayNode toolsNode = root.putArray("tools");
         for (ToolEntry entry : tools) {
-            ObjectNode node = entry.tool().toJson();
+            ObjectNode node = entry.tool().toRawJson();
             node.put("fingerprint", entry.fingerprint());
             toolsNode.add(node);
         }
@@ -206,22 +254,36 @@ public record Baseline(int version,
             node.put("id", change.id());
             node.put("tool", change.toolName());
             node.put("digest", change.digest());
+            node.put("targetId", change.targetId());
+            node.put("beforeFingerprint", change.beforeFingerprint());
+            node.put("afterFingerprint", change.afterFingerprint());
         }
 
-        if (file.getParent() != null) {
-            Files.createDirectories(file.getParent());
-        }
-        Files.writeString(file, MAPPER.writer(prettyPrinter()).writeValueAsString(root),
-                StandardCharsets.UTF_8);
+        String serialized = MAPPER.writer(prettyPrinter()).writeValueAsString(root);
+        AtomicFiles.write(file, serialized, temp -> {
+            Baseline verified = read(temp);
+            if (!this.sameContentAs(verified)) {
+                throw new IOException("基线写入后回读校验不一致");
+            }
+        });
     }
 
-    /**
-     * 让数组也逐元素换行。
-     *
-     * <p>默认的美化输出会把 {@code "tools" : [ {} } 挤在同一行，两个后果：
-     * 一是这份"要提交进版本库、出现在评审里"的文件变得难读也难 diff；
-     * 二是注解无法定位到具体工具所在的行（SARIF 的 {@code region.startLine} 需要真实行号）。
-     */
+    /** Compare and replace while coordinating writers using this tool. */
+    public void writeExpected(Path file, Baseline expected) throws IOException {
+        Path target = file.toAbsolutePath().normalize();
+        Files.createDirectories(target.getParent());
+        Path lockPath = target.resolveSibling(target.getFileName() + ".write-lock");
+        try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+            try (var lock = channel.tryLock()) {
+                if (lock == null) throw new IOException("另一进程正在批准这份基线，请重新扫描");
+                if (expected != null && !expected.equals(read(target))) throw new IOException("基线在审阅后已改变；未写回，请重新扫描");
+                write(target);
+            }
+        } catch (OverlappingFileLockException e) {
+            throw new IOException("另一进程正在批准这份基线，请重新扫描", e);
+        }
+    }
+
     static com.fasterxml.jackson.core.util.DefaultPrettyPrinter prettyPrinter() {
         com.fasterxml.jackson.core.util.DefaultPrettyPrinter printer =
                 new com.fasterxml.jackson.core.util.DefaultPrettyPrinter();
@@ -232,53 +294,30 @@ public record Baseline(int version,
     // ---------- 对比 ----------
 
     /**
-     * 与当前工具面比较，得出**带类型的变更集**。
-     *
-     * <p>重名工具按**出现序号**逐个配对——旧版以工具名为键，其中一个被改写会被另一个覆盖，
-     * 于是改动被完全静默地吞掉。已批准的变更（指纹命中 {@code acceptedChanges}）
-     * 会被标出来但不阻断 CI。
+     * 与当前工具面比较，得出<b>带类型的变更集</b>。
      */
     public SurfaceDiff diffAgainst(ToolSurface current) {
         Map<String, List<ToolEntry>> before = group(tools, entry -> entry.tool().name());
         Map<String, List<ToolDefinition>> after = group(current.sorted(), ToolDefinition::name);
 
         List<Change> changes = new ArrayList<>();
+        List<PathChange> paths = new ArrayList<>();
         for (Map.Entry<String, List<ToolDefinition>> entry : after.entrySet()) {
             List<ToolEntry> previous = before.get(entry.getKey());
             for (int i = 0; i < entry.getValue().size(); i++) {
                 ToolDefinition now = entry.getValue().get(i);
                 if (previous == null || i >= previous.size()) {
-                    // 新增的工具是攻击面——rug pull 最常见的形态就是"多出来一个工具"
+                    paths.addAll(PathChange.between(entry.getKey(), i, null, now.toJson()));
                     changes.add(new Change("TOOL_ADDED", entry.getKey(), i, ChangeSeverity.DANGEROUS,
-                            "新增工具", ToolFingerprint.of(now).substring(0, 16)));
+                            "新增工具", ToolFingerprint.of(now).substring(0, 16)).at(""));
                     continue;
                 }
                 ToolDefinition was = previous.get(i).tool();
                 if (!ToolFingerprint.of(now).equals(previous.get(i).fingerprint())) {
-                    List<Change> graded = SchemaDiff.between(was, now, i);
+                    List<PathChange> toolPaths = PathChange.between(entry.getKey(), i, was.toJson(), now.toJson());
+                    paths.addAll(toolPaths);
+                    List<Change> graded = SchemaDiff.between(was, now, i, toolPaths);
                     if (graded.isEmpty()) {
-                        // ── 指纹变了，分级器却一条都没枚举出来 ──────────────────
-                        //
-                        // 这时**绝不能当成"没有变化"**。`SurfaceDiff.isClean()` 只看
-                        // `changes.isEmpty()`，所以这里返回空列表 = 报告写
-                        // 「工具面与基线一致，无变化」+ 退出码 0 —— 一次真实的 rug pull
-                        // 就这么静默过去了。
-                        //
-                        // 实测（2026-09-22，`SchemaDiff.between` 直接调用）：
-                        //
-                        //   嵌套 object 里加一个参数        指纹变了 → 变更 0 条
-                        //   参数加 "const"                 指纹变了 → 变更 0 条
-                        //   items 从 integer 放宽成 string  指纹变了 → 变更 0 条
-                        //   顶层加 allOf                    指纹变了 → 变更 0 条
-                        //
-                        // 四种都是货真价实的攻击面变化。根因是分级器只枚举它认识的
-                        // 那几类（顶层 properties / required / additionalProperties 布尔 /
-                        // 逐参数的 type / enum / 7 个约束 / description），
-                        // 其余一律不产生 Change——**"没枚举到"与"没变化"被混为一谈了**。
-                        //
-                        // 所以这里补一条兜底，把不变量钉死：**指纹变了 ⇒ 至少一条变更**。
-                        // 级别取 DANGEROUS：我们连改的是什么都不知道，按最保守的处理，
-                        // 出口是 `--accept-changes`（人看过再批）。
                         graded = List.of(new Change("UNGRADED_SCHEMA_CHANGE", entry.getKey(), i,
                                 ChangeSeverity.DANGEROUS,
                                 "schema 变了但分级器认不出改了哪一处（折叠、嵌套或本工具尚未覆盖的"
@@ -293,11 +332,17 @@ public record Baseline(int version,
             List<ToolDefinition> currentTools = after.get(entry.getKey());
             int currentSize = currentTools == null ? 0 : currentTools.size();
             for (int i = currentSize; i < entry.getValue().size(); i++) {
+                paths.addAll(PathChange.between(entry.getKey(), i, entry.getValue().get(i).tool().toJson(), null));
                 changes.add(new Change("TOOL_REMOVED", entry.getKey(), i, ChangeSeverity.BREAKING,
-                        "工具被移除", entry.getValue().get(i).fingerprint().substring(0, 16)));
+                        "工具被移除", entry.getValue().get(i).fingerprint().substring(0, 16)).at(""));
             }
         }
-        return new SurfaceDiff(changes, approvedDigests());
+        java.util.Set<String> applicable = new java.util.LinkedHashSet<>();
+        for (AcceptedChange change : acceptedChanges) {
+            if (targetId.equals(change.targetId()) && surfaceFingerprint.equals(change.beforeFingerprint())
+                    && current.fingerprint().equals(change.afterFingerprint())) applicable.add(change.digest());
+        }
+        return new SurfaceDiff(changes, applicable, paths);
     }
 
     /** 已批准的变更指纹集合 */
