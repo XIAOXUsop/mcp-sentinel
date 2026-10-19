@@ -1,0 +1,34 @@
+{
+  "reportVersion" : 2,
+  "toolVersion" : "0.6.0",
+  "schemaVersion" : 2,
+  "server" : "unavailable",
+  "surfaceFingerprint" : "",
+  "baselineFingerprint" : "",
+  "targetId" : "server:unavailable",
+  "fingerprintsAvailable" : false,
+  "collectionStatus" : "FAILED",
+  "toolCount" : 0,
+  "status" : "FAIL",
+  "exitCode" : 1,
+  "errorCategory" : "USAGE_OR_CONFIG_ERROR",
+  "tools" : [ ],
+  "errors" : [ {
+    "category" : "USAGE_OR_CONFIG_ERROR",
+    "phase" : "CONFIG_READ",
+    "message" : "配置无法读取或字段不符合支持的格式（IOException）"
+  } ],
+  "thresholds" : {
+    "failOnRisk" : "HIGH",
+    "failOnChange" : "BREAKING"
+  },
+  "riskCounts" : {
+    "HIGH" : 0,
+    "MEDIUM" : 0,
+    "LOW" : 0
+  },
+  "findings" : [ ],
+  "diff" : null,
+  "outputErrors" : [ ],
+  "generatedAt" : "2026-10-19T14:30:09.541950500Z"
+}

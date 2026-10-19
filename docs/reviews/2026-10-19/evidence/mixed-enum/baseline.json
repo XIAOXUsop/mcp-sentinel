@@ -1,0 +1,32 @@
+{
+  "version" : 3,
+  "schemaVersion" : 2,
+  "_comment" : "MCP 工具面基线。请提交进版本库：工具定义变化应当出现在 diff 与评审中。保存已采集定义的原文；指纹单独规范化；审批必须绑定已审阅的前后快照。",
+  "server" : "review-server",
+  "targetId" : "review-target",
+  "surfaceFingerprint" : "310df3e13920a2291648d1fc15242737da5d6f8071c91b110280a4b32c877e35",
+  "generatedAt" : "2026-10-19T14:29:59.190007400Z",
+  "tools" : [
+    {
+      "name" : "configure",
+      "title" : "",
+      "description" : "Configures preferences.",
+      "inputSchema" : {
+        "type" : "object",
+        "properties" : {
+          "mode" : {
+            "enum" : [
+              "read",
+              "list"
+            ]
+          }
+        },
+        "additionalProperties" : false
+      },
+      "outputSchema" : { },
+      "annotations" : { },
+      "fingerprint" : "e66d047caf4ee8010f31e8fafcd9d9ced66a84cec04a648074768cb0fe08eb22"
+    }
+  ],
+  "acceptedChanges" : [ ]
+}

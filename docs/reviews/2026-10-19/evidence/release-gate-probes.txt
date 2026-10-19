@@ -1,0 +1,7 @@
+[闸一] 拿不到 Dependabot 告警：HTTP 403 Synthetic inaccessible endpoint
+[闸一] 401/403 是 **GITHUB_TOKEN 够不到这个接口**的典型表现（实测：授权 security-events: read 也一样）。
+[闸一] 修法：给仓库加一个 PAT secret（workflow 里读 `PREFLIGHT_TOKEN`），或在打 tag 前本地跑一遍 `--tag <tag> --base origin/<分支>`。
+[闸一] !! 无法检查依赖告警（HTTP 403），本次**没有**做这项检查
+[闸一] !! 按 `--alerts-optional` 放行——这一轮的开销由调用方承担
+[闸一] 开放依赖告警 100 条，其中 high 及以上 0 条
+[闸一] 注意：正好取满一页（100 条），后面可能还有未取到的告警

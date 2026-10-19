@@ -1,0 +1,44 @@
+{
+  "reportVersion" : 2,
+  "toolVersion" : "0.6.0",
+  "schemaVersion" : 2,
+  "server" : "review-server",
+  "surfaceFingerprint" : "9ad86394f90327c769940b84eae67986ef0a8bec22555d1c20c77fa9f1837c12",
+  "baselineFingerprint" : "",
+  "targetId" : "review-target",
+  "fingerprintsAvailable" : true,
+  "collectionStatus" : "COMPLETE",
+  "toolCount" : 1,
+  "status" : "FAIL",
+  "exitCode" : 3,
+  "errorCategory" : "STATIC_RISK_FINDINGS",
+  "tools" : [ {
+    "name" : "configure",
+    "occurrence" : 0,
+    "fingerprint" : "9ecf3ae382df9c1611a068c12d9c793c9b99f9095658b145112a1c8e401183fd"
+  } ],
+  "errors" : [ {
+    "category" : "STATIC_RISK_FINDINGS",
+    "phase" : "POLICY_CHECK",
+    "message" : "静态风险达到 MEDIUM 阈值"
+  } ],
+  "thresholds" : {
+    "failOnRisk" : "MEDIUM",
+    "failOnChange" : "BREAKING"
+  },
+  "riskCounts" : {
+    "HIGH" : 0,
+    "MEDIUM" : 1,
+    "LOW" : 0
+  },
+  "findings" : [ {
+    "ruleId" : "SCHEMA_OPEN_OBJECT",
+    "severity" : "MEDIUM",
+    "tool" : "configure",
+    "message" : "schema 允许 additionalProperties：未声明的字段会被静默接受，使调用方看到的契约与实际可传内容不一致",
+    "evidence" : "additionalProperties=true"
+  } ],
+  "diff" : null,
+  "outputErrors" : [ ],
+  "generatedAt" : "2026-10-19T14:22:52.865502900Z"
+}

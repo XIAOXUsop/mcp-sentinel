@@ -1,0 +1,57 @@
+{
+  "reportVersion" : 2,
+  "toolVersion" : "0.6.0",
+  "schemaVersion" : 2,
+  "server" : "review-server",
+  "surfaceFingerprint" : "dd7ee99336b961531aaa0793918794f6773310362257f6dcc6df0c420d5fc3c4",
+  "baselineFingerprint" : "310df3e13920a2291648d1fc15242737da5d6f8071c91b110280a4b32c877e35",
+  "targetId" : "review-target",
+  "fingerprintsAvailable" : true,
+  "collectionStatus" : "COMPLETE",
+  "toolCount" : 1,
+  "status" : "PASS",
+  "exitCode" : 0,
+  "errorCategory" : "NONE",
+  "tools" : [ {
+    "name" : "configure",
+    "occurrence" : 0,
+    "fingerprint" : "44ec8eb64ab2bc313ee907095aec1495bcbf34d71bc718eb98974d6733bccd0c"
+  } ],
+  "errors" : [ ],
+  "thresholds" : {
+    "failOnRisk" : "HIGH",
+    "failOnChange" : "DANGEROUS"
+  },
+  "riskCounts" : {
+    "HIGH" : 0,
+    "MEDIUM" : 0,
+    "LOW" : 0
+  },
+  "findings" : [ ],
+  "diff" : {
+    "clean" : false,
+    "totalChanges" : 1,
+    "blockingChanges" : 0,
+    "paths" : [ {
+      "tool" : "configure",
+      "occurrence" : 0,
+      "path" : "/inputSchema/properties/mode/enum/0",
+      "beforePresent" : true,
+      "afterPresent" : true,
+      "before" : "list",
+      "after" : "admin"
+    } ],
+    "changes" : [ {
+      "id" : "PARAM_ENUM_CHANGED",
+      "tool" : "configure",
+      "occurrence" : 0,
+      "severity" : "BREAKING",
+      "approved" : false,
+      "detail" : "参数 mode 的取值域改变：[\"list\", \"read\"] → [\"admin\", \"read\"]",
+      "digest" : "0dfcf6cc520f405be6d9946061b329d5",
+      "paths" : [ "/inputSchema/properties/mode/enum/0" ]
+    } ]
+  },
+  "outputErrors" : [ ],
+  "generatedAt" : "2026-10-19T14:29:59.701756300Z"
+}

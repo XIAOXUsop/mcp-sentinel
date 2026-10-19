@@ -1,0 +1,59 @@
+{
+  "reviewDate": "2026-10-19",
+  "timezone": "Asia/Shanghai",
+  "commit": "637818543fcbe1c529beafc72f6c19e429fc0b1d",
+  "workingTreeClean": true,
+  "codeModified": false,
+  "newCommitOrPush": false,
+  "assessment": "G1 must be reopened; not ready for stable publication",
+  "findings": {
+    "P1": [
+      "R01",
+      "R03"
+    ],
+    "P2": [
+      "R02",
+      "R04",
+      "R05",
+      "R06",
+      "R07",
+      "R08"
+    ]
+  },
+  "javaTests": {
+    "tests": 176,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "pythonTestsPassed": 31,
+  "artifactCliChecks": 17,
+  "artifactJsonReportsValidated": 9,
+  "artifactSarifReportsValidated": 9,
+  "originalTrustRegressions": 4,
+  "targetedCliProbeRuns": 19,
+  "targetedReportsSchemaValidated": 12,
+  "generatedEvaluation": {
+    "comparisons": 300,
+    "independentWitnessChecks": 600,
+    "riskProbes": 200
+  },
+  "jarSha256": "2c9bd17e9bb45923c7c69aa90a77e25017150948b2bd56707c6889bc1e13a3c8",
+  "sbomSha256": "409ab92823d74d983f763dcb8b726e99e32aa9027219bd43b9187af515fbb31f",
+  "sbomComponents": 13,
+  "remoteCI": {
+    "id": 39018278179,
+    "head": "637818543fcbe1c529beafc72f6c19e429fc0b1d",
+    "conclusion": "success"
+  },
+  "currentDependabotAlertDetailsVerified": false,
+  "knownRemainingGates": [
+    "pre-parse byte limits",
+    "direct cleanup verification",
+    "real interoperability",
+    "peak memory and full-scan performance",
+    "independent labeled real samples",
+    "pilots and paid evidence"
+  ],
+  "incrementalBuildNote": "Initial incremental JAR differed only in META-INF/LICENSE bytes; all class bytes were identical. Final clean build matched the previous G1 JAR, and critical probes and artifact verification were rerun on that clean build."
+}

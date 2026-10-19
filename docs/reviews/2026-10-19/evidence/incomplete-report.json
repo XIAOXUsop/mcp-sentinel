@@ -1,0 +1,38 @@
+{
+  "reportVersion" : 2,
+  "toolVersion" : "0.6.0",
+  "schemaVersion" : 2,
+  "server" : "review-server",
+  "surfaceFingerprint" : "7db505d505b32ee5b895a22bc2d59ee841bab8bc01e7b4a168f9ba4f46e3d73b",
+  "baselineFingerprint" : "",
+  "targetId" : "review-target",
+  "fingerprintsAvailable" : true,
+  "collectionStatus" : "COMPLETE",
+  "toolCount" : 1,
+  "status" : "FAIL",
+  "exitCode" : 5,
+  "errorCategory" : "BASELINE_UNAVAILABLE",
+  "tools" : [ {
+    "name" : "configure",
+    "occurrence" : 0,
+    "fingerprint" : "ef2f60e1d143de268af0e24c278d086114b3ccb7fbcff3253cd6b7a58048a128"
+  } ],
+  "errors" : [ {
+    "category" : "BASELINE_UNAVAILABLE",
+    "phase" : "BASELINE_READ",
+    "message" : "基线文件不存在，必须先建立并审阅可信基线"
+  } ],
+  "thresholds" : {
+    "failOnRisk" : "HIGH",
+    "failOnChange" : "BREAKING"
+  },
+  "riskCounts" : {
+    "HIGH" : 0,
+    "MEDIUM" : 0,
+    "LOW" : 0
+  },
+  "findings" : [ ],
+  "diff" : null,
+  "outputErrors" : [ ],
+  "generatedAt" : "2026-10-19T14:30:09.291816200Z"
+}

@@ -1,0 +1,34 @@
+{
+  "reportVersion" : 2,
+  "toolVersion" : "0.6.0",
+  "schemaVersion" : 2,
+  "server" : "review-server",
+  "surfaceFingerprint" : "828b0425d458d3e6a21fe65d327e8d232651ff5ac8f1337722290ca607da4547",
+  "baselineFingerprint" : "",
+  "targetId" : "review-target",
+  "fingerprintsAvailable" : true,
+  "collectionStatus" : "COMPLETE",
+  "toolCount" : 1,
+  "status" : "PASS",
+  "exitCode" : 0,
+  "errorCategory" : "NONE",
+  "tools" : [ {
+    "name" : "configure",
+    "occurrence" : 0,
+    "fingerprint" : "e2b4292eee30c9972d8437d15fe92429503f0eef5e798aeaba9f1e742c54f95a"
+  } ],
+  "errors" : [ ],
+  "thresholds" : {
+    "failOnRisk" : "MEDIUM",
+    "failOnChange" : "BREAKING"
+  },
+  "riskCounts" : {
+    "HIGH" : 0,
+    "MEDIUM" : 0,
+    "LOW" : 0
+  },
+  "findings" : [ ],
+  "diff" : null,
+  "outputErrors" : [ ],
+  "generatedAt" : "2026-10-19T14:22:52.512043900Z"
+}

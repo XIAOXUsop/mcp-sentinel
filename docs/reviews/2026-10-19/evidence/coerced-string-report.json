@@ -1,0 +1,40 @@
+{
+  "reportVersion" : 2,
+  "toolVersion" : "0.6.0",
+  "schemaVersion" : 2,
+  "server" : "review-server",
+  "surfaceFingerprint" : "7541527821ce3b093c52297e4024c4d8735f4ed45b6037a42765864bc176de4e",
+  "baselineFingerprint" : "7541527821ce3b093c52297e4024c4d8735f4ed45b6037a42765864bc176de4e",
+  "targetId" : "target:2b1a3b94ea1064e3a24238ff74f17901d5d4458c5eb108d35891271d0486d6ac",
+  "fingerprintsAvailable" : true,
+  "collectionStatus" : "COMPLETE",
+  "toolCount" : 1,
+  "status" : "PASS",
+  "exitCode" : 0,
+  "errorCategory" : "NONE",
+  "tools" : [ {
+    "name" : "configure",
+    "occurrence" : 0,
+    "fingerprint" : "6b373fa56f51ad6c0a7e5bb14036d99dc0e6d0acd9155b3181042e0fde18f256"
+  } ],
+  "errors" : [ ],
+  "thresholds" : {
+    "failOnRisk" : "HIGH",
+    "failOnChange" : "BREAKING"
+  },
+  "riskCounts" : {
+    "HIGH" : 0,
+    "MEDIUM" : 0,
+    "LOW" : 0
+  },
+  "findings" : [ ],
+  "diff" : {
+    "clean" : true,
+    "totalChanges" : 0,
+    "blockingChanges" : 0,
+    "paths" : [ ],
+    "changes" : [ ]
+  },
+  "outputErrors" : [ ],
+  "generatedAt" : "2026-10-19T14:30:03.009142700Z"
+}

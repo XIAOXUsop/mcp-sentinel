@@ -1,0 +1,16 @@
+{
+  "tools": [
+    {
+      "name": "configure",
+      "description": "Configures preferences.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": 1,
+        "destructiveHint": 0
+      }
+    }
+  ]
+}

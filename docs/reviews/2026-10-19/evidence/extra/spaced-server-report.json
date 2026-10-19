@@ -1,0 +1,44 @@
+{
+  "reportVersion" : 2,
+  "toolVersion" : "0.6.0",
+  "schemaVersion" : 2,
+  "server" : "My MCP Server",
+  "surfaceFingerprint" : "af0ed3e2b429e0059027d7473fc8ad9313092a83f2d39f0b4150f85b5c9b50cb",
+  "baselineFingerprint" : "",
+  "targetId" : "review-target",
+  "fingerprintsAvailable" : true,
+  "collectionStatus" : "COMPLETE",
+  "toolCount" : 1,
+  "status" : "FAIL",
+  "exitCode" : 3,
+  "errorCategory" : "STATIC_RISK_FINDINGS",
+  "tools" : [ {
+    "name" : "configure",
+    "occurrence" : 0,
+    "fingerprint" : "99c86bdae3fcc6d17b1db60343e7b7670bf0f58e0d059552900bbed7a4f7cb79"
+  } ],
+  "errors" : [ {
+    "category" : "STATIC_RISK_FINDINGS",
+    "phase" : "POLICY_CHECK",
+    "message" : "静态风险达到 HIGH 阈值"
+  } ],
+  "thresholds" : {
+    "failOnRisk" : "HIGH",
+    "failOnChange" : "BREAKING"
+  },
+  "riskCounts" : {
+    "HIGH" : 1,
+    "MEDIUM" : 0,
+    "LOW" : 0
+  },
+  "findings" : [ {
+    "ruleId" : "UNSAFE_SERVER_NAME",
+    "severity" : "HIGH",
+    "tool" : "",
+    "message" : "服务器名不符合规范字符集：它可以夹带换行与控制字符，从而在扫描报告里伪造出行、注入 CI 工作流命令、或让 SARIF 失效",
+    "evidence" : "含规范外的字符 \\u0020\\u0020"
+  } ],
+  "diff" : null,
+  "outputErrors" : [ ],
+  "generatedAt" : "2026-10-19T14:22:52.238793200Z"
+}

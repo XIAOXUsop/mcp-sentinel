@@ -1,0 +1,57 @@
+{
+  "reportVersion" : 2,
+  "toolVersion" : "0.6.0",
+  "schemaVersion" : 2,
+  "server" : "review-server",
+  "surfaceFingerprint" : "75265916373da73dc8f3a950f2f6ac2334608da746da33ce10fdbca9f6e652ed",
+  "baselineFingerprint" : "afc848fd3317b068f7b1731eac506cb4bc51b3f8d2777ebbb9e462dbc56f2b22",
+  "targetId" : "review-target",
+  "fingerprintsAvailable" : true,
+  "collectionStatus" : "COMPLETE",
+  "toolCount" : 1,
+  "status" : "PASS",
+  "exitCode" : 0,
+  "errorCategory" : "NONE",
+  "tools" : [ {
+    "name" : "configure",
+    "occurrence" : 0,
+    "fingerprint" : "359a309458e5dcdf666bf0cb1367f0fc6d2f471d3874cb7fc838f2b2a4520146"
+  } ],
+  "errors" : [ ],
+  "thresholds" : {
+    "failOnRisk" : "HIGH",
+    "failOnChange" : "DANGEROUS"
+  },
+  "riskCounts" : {
+    "HIGH" : 0,
+    "MEDIUM" : 0,
+    "LOW" : 0
+  },
+  "findings" : [ ],
+  "diff" : {
+    "clean" : false,
+    "totalChanges" : 1,
+    "blockingChanges" : 0,
+    "paths" : [ {
+      "tool" : "configure",
+      "occurrence" : 0,
+      "path" : "/inputSchema/properties/value/type/0",
+      "beforePresent" : true,
+      "afterPresent" : true,
+      "before" : "boolean",
+      "after" : "object"
+    } ],
+    "changes" : [ {
+      "id" : "PARAM_TYPE_CHANGED",
+      "tool" : "configure",
+      "occurrence" : 0,
+      "severity" : "BREAKING",
+      "approved" : false,
+      "detail" : "参数 value 的类型 boolean|string → object|string",
+      "digest" : "7cf3c5a4ea4c251668f1f3f785e355c0",
+      "paths" : [ "/inputSchema/properties/value/type/0" ]
+    } ]
+  },
+  "outputErrors" : [ ],
+  "generatedAt" : "2026-10-19T14:30:00.303073100Z"
+}
