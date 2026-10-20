@@ -60,7 +60,7 @@ N05 依赖真实人工复核者；未就绪时完成说明、工具和来源整�
 | Filesystem | TypeScript；stdio | Linux、Windows | 2 | 启动参数、路径/空格、声明原文、正常退出 |
 | Git | Python；stdio | Linux、Windows | 2 | 第二类 SDK 实现、临时仓库配置、Schema 与注解 |
 | Playwright MCP | stdio、Streamable HTTP | Linux、Windows | 4 | 两类传输下同配置的工具面、会话关闭、HTTP 初始化 |
-| 合计 | 3 个项目，2 类实现，2 类传输 | 2 个平台 | 8 | 每项单独留证 |
+| 合计 | 3 个服务实现（2 个上游仓库），2 类实现，2 类传输 | 2 个平台 | 8 | 每项单独留证 |
 
 Playwright 文档提供 `--port` 与 `/mcp` HTTP 入口；执行时仍需验证所固定版本的实际行为，不把当前 README 视为兼容性通过证据。[HTTP 启动说明](https://github.com/microsoft/playwright-mcp#standalone-mcp-server)。
 

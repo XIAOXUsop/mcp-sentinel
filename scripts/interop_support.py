@@ -69,7 +69,16 @@ class OwnedProcess:
                 pass
 
     def alive(self):
-        return [p for p in list(self.tracked.values()) if p.is_running()]
+        remaining=[]
+        for process in list(self.tracked.values()):
+            # A signaled Popen handle proves this process ended; Windows process
+            # enumeration can briefly retain its PID while handles are closing.
+            if process.pid==self.process.pid and self.process.poll() is not None: continue
+            if not process.is_running(): continue
+            try: process.wait(timeout=.05)
+            except psutil.TimeoutExpired: remaining.append(process)
+            except psutil.NoSuchProcess: pass
+        return remaining
 
     def cleanup(self):
         # Children first, while their parent can still reap them.

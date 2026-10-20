@@ -69,3 +69,83 @@ jobs:
             target/candidate-demo/**
             target/manual-corpus/**
             target/performance/**
+
+  sarif-ingestion:
+    name: Controlled SARIF ingestion after a blocked scan
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/download-artifact@v5
+        with:
+          name: validation-evidence-ubuntu-latest
+          path: tested
+      - name: Bind downloaded artifact to this exact commit
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          evidence=json.loads(Path('tested/artifact-verification/build-evidence.json').read_text())
+          assert evidence['commit']==os.environ['GITHUB_SHA']
+          assert evidence['jarSha256']==hashlib.sha256(Path('tested/mcp-sentinel.jar').read_bytes()).hexdigest()
+          PY
+      - name: Prepare one synthetic INFO change
+        run: |
+          mkdir -p target/sarif-ingestion/classes
+          javac -cp tested/mcp-sentinel.jar -d target/sarif-ingestion/classes scripts/SarifIngestionProbe.java
+          java -cp target/sarif-ingestion/classes:tested/mcp-sentinel.jar SarifIngestionProbe target/sarif-ingestion
+      - name: Observe expected drift failure
+        id: scan
+        # This is a negative-test harness. The consuming PR template has no continue-on-error.
+        continue-on-error: true
+        run: >-
+          java -jar tested/mcp-sentinel.jar scan
+          --snapshot target/sarif-ingestion/changed.json
+          --baseline target/sarif-ingestion/baseline.json
+          --fail-on-change INFO
+          --json target/sarif-ingestion/report.json
+          --sarif target/sarif-ingestion/report.sarif
+      - name: Require the specific expected failure
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report=json.loads(Path('target/sarif-ingestion/report.json').read_text())
+          assert report['exitCode']==4
+          assert report['diff']['blockingChanges']==1
+          assert report['findings']==[]
+          PY
+      - name: Import the actual SARIF and await processing
+        id: upload
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: target/sarif-ingestion/report.sarif
+          category: mcp-sentinel/controlled-ingestion-probe
+          wait-for-processing: true
+      - name: Preserve both independent outcomes
+        if: always()
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          receipt={k:os.environ[k] for k in ['SCAN_OUTCOME','UPLOAD_OUTCOME','GITHUB_SHA','GITHUB_RUN_ID']}
+          Path('target/sarif-ingestion').mkdir(parents=True,exist_ok=True)
+          Path('target/sarif-ingestion/receipt.json').write_text(json.dumps(receipt,indent=2))
+          assert receipt['SCAN_OUTCOME']=='failure'
+          assert receipt['UPLOAD_OUTCOME']=='success'
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sarif-ingestion-evidence
+          path: target/sarif-ingestion

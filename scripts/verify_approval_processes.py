@@ -71,7 +71,7 @@ def verify(args):
     checks.append({'case':'output-failure-preserves-baseline','status':'passed'})
     save(out/'summary.json',{'platform':sys.platform,'jarSha256':sha(jar),'checks':checks,
         'interruptScope':'process termination at checked temporary file / completed replacement; not power-loss durability',
-        'sarifUpload':'NOT_RUN_NO_UPLOAD_WORKFLOW_PERMISSION','stableRelease':'BLOCKED'})
+        'sarifUpload':'SEE_SEPARATE_CONTROLLED_INGESTION_JOB','stableRelease':'BLOCKED'})
     print(f'{len(checks)} approval/workflow process checks passed',flush=True)
 
 

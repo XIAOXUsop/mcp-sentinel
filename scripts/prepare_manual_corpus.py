@@ -18,14 +18,15 @@ def prepare(source,output):
             identifier=hashlib.sha256(identity.encode()).hexdigest()[:16]
             path=save(output/'declarations'/f'{identifier}.json',tool)
             records.append({'sampleId':identifier,'service':service,'version':version,'tool':tool['name'],
-                'group':service,'split':'development','declaration':str(path.relative_to(output)),
+                'group':'modelcontextprotocol/servers','split':'development','declaration':str(path.relative_to(output)),
                 'declarationSha256':sha(path),'sourceEvidenceSha256':sha(evidence),
                 'sourceKind':'public-package-wire-declaration','redistributionReview':'PENDING',
                 'reviews':[],'adjudication':None})
     assert len(records)==20
     save(output/'samples.json',{'datasetVersion':1,'samples':records,'humanLabels':0,'holdoutSamples':0,
-          'sourceGroups':sorted({r['service'] for r in records}),'status':'AWAITING_INDEPENDENT_HUMAN_REVIEW',
-          'limitations':['20 development declarations; not the 200-sample target','two source projects; not ten-source coverage',
+          'sourceGroups':sorted({r['group'] for r in records}),'serviceSources':sorted({r['service'] for r in records}),
+          'status':'AWAITING_INDEPENDENT_HUMAN_REVIEW',
+          'limitations':['20 development declarations; not the 200-sample target','two service packages from one upstream repository; not ten-source coverage',
                          'no accuracy or false-positive estimate','raw declarations stay local until redistribution review']})
     save(output/'review-template.json',{'sampleId':'REPLACE_WITH_SAMPLE_ID','reviewerId':'','role':'',
         'independentOfRuleImplementation':None,'reviewedAt':'','label':'UNLABELED',

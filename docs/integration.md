@@ -4,7 +4,7 @@
 
 候选快照仍是待审数据，不证明实际服务按该声明运行；来源与对应关系需要可信采集或人工审阅。使用方应审阅自己的构建方式和固定数据路径。示例保留扫描失败，再上传报告文件，没有将 artifact 上传当作 GitHub Code Scanning 的 SARIF 导入。
 
-scripts/verify_approval_processes.py 使用真实独立进程验证竞争、中断、可信/候选基线对照和输出失败。中断点为校验完成的临时文件和完成的原子替换，不泛化为断电保证。当前工作流只有 contents:read，实际 SARIF 导入单列为待验收。
+scripts/verify_approval_processes.py 使用真实独立进程验证竞争、中断、可信/候选基线对照和输出失败。中断点为校验完成的临时文件和完成的原子替换，不泛化为断电保证。常规验证作业为 contents:read；独立 SARIF 导入作业另有 security-events:write，结果以该次实际处理状态为准。
 
 ## 可信基线
 

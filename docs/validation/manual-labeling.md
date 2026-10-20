@@ -2,7 +2,7 @@
 
 状态：等待真实人工参与。已自动准备 20 个公开来源开发样例，人工标签为 0，不能给出准确率或误报率。
 
-运行 python scripts/prepare_manual_corpus.py，得到 target/manual-corpus/samples.json、原始声明和 review-template.json。选择规则是固定版本的 Filesystem 与 Git 声明按名称排序取前 20 项；没有按扫描结果挑选。目前仅两个项目、全部开发组，不满足 200 样例、至少 10 个来源或保留组要求。
+运行 python scripts/prepare_manual_corpus.py，得到 target/manual-corpus/samples.json、原始声明和 review-template.json。选择规则是固定版本的 Filesystem 与 Git 声明按名称排序取前 20 项；没有按扫描结果挑选。两种服务包来自同一个上游仓库，分组一并保留，不能拆成独立项目扩大来源数。目前全部为开发组，不满足 200 样例、至少 10 个来源或保留组要求。
 
 ## 标注顺序
 

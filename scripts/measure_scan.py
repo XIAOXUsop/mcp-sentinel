@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import shutil
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -50,7 +51,8 @@ def sample(command, directory, expected):
         stop.set(); watcher.join(timeout=2); owned.finish()
     memory=load(Path(directory)/'memory.json')
     peak=peak if peak is not None else memory['linuxVmHwmKiB']*1024
-    value={'exitCode':code,'elapsedSeconds':time.perf_counter()-start,'rootPeakRssBytes':peak,
+    value={'command':list(map(str,command)),'expectedExit':expected,'exitCode':code,
+           'elapsedSeconds':time.perf_counter()-start,'rootPeakRssBytes':peak,
             'cliBodySeconds':memory['cliBodyNanos']/1e9,'sampleCount':samples,**maxima}
     save(Path(directory)/'measurement.json',value)
     assert code==expected, (directory,code,expected)
@@ -115,6 +117,19 @@ def measure(args):
         baseline=out/'fixtures/external-http.baseline.json'
         run([*java,'lock','--config',str(config),'--out',str(baseline)],out/'lock-external-http')
         scenarios.append(('external-playwright-http',['--config',str(config),'--baseline',str(baseline)],0))
+    cpu_model=platform.processor() or os.environ.get('PROCESSOR_IDENTIFIER','unknown')
+    if Path('/proc/cpuinfo').exists():
+        cpu_model=next((line.split(':',1)[1].strip() for line in Path('/proc/cpuinfo').read_text().splitlines()
+                        if line.startswith('model name')),cpu_model)
+    context={**source_identity(),'jarSha256':sha(jar),'sbomSha256':sha(ROOT/'target/bom.json'),
+        'javaRuntime':subprocess.check_output([java[0],'-version'],stderr=subprocess.STDOUT,text=True).strip(),
+        'pythonVersion':sys.version,'cpuModel':cpu_model,'logicalCpuCount':psutil.cpu_count(),
+        'physicalCpuCount':psutil.cpu_count(logical=False),'totalMemoryBytes':psutil.virtual_memory().total,
+        'runner':{name:os.environ.get(name) for name in ['RUNNER_NAME','RUNNER_OS','RUNNER_ARCH']},
+        'serviceManifestSha256':sha(ROOT/'validation/interop/manifest.json'),
+        'inputDigests':{str(path.relative_to(out)):sha(path) for path in sorted((out/'fixtures').glob('*.json'))},
+        'dataIdentity':{path.name:load(path)['surfaceFingerprint'] for path in sorted((out/'fixtures').glob('*.snapshot.json'))}}
+    save(out/'measurement-context.json',context)
     results=[]
     try:
         for name,source,expected in scenarios:
@@ -129,7 +144,8 @@ def measure(args):
             results.append({'scenario':name,'measured':len(actual),'medianSeconds':statistics.median(times),
                 'p95Seconds':times[math.ceil(.95*len(times))-1],'maxRootPeakRssBytes':max(x['rootPeakRssBytes'] for x in actual),
                 'maxTreeSampledRssBytes':max(x['treeRssSampledMaxBytes'] for x in actual),'samplesSha256':sha(out/name/'samples.json')})
-            save(out/'summary.json',{**source_identity(),'platform':platform.platform(),'jarSha256':sha(jar),'jvm':['-Xms64m','-Xmx512m'],
+            save(out/'summary.json',{**context,'measurementContextSha256':sha(out/'measurement-context.json'),
+                'platform':platform.platform(),'jvm':['-Xms64m','-Xmx512m'],
                 'warmups':args.warmups,'repetitions':args.repetitions,'p95Method':'nearest rank',
                 'adapter':'tested JAR Main.run; adapter reports memory after reports are written',
                 'rootPeakScope':'Windows native lifetime PeakWorkingSetSize; Linux VmHWM at CLI completion before teardown',
