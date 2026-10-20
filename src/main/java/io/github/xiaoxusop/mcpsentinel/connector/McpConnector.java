@@ -123,7 +123,7 @@ public final class McpConnector {
                     return Result.failure(target.serverName(), "工具分页 cursor 为空或重复；不能把未完成采集当成完整工具面");
                 }
             } while (cursor != null);
-            return Result.success(ToolSurface.of(serverName, tools));
+            return Result.success(ToolSurface.of(serverName, tools), handshake.protocolVersion());
         } catch (Exception e) {
             return Result.failure(target.serverName(), "初始化".equals(phase) ? "INITIALIZE" : "COLLECT_TOOLS", target.redactDiagnostic(
                     phase + "失败（HTTP 连接超时=" + target.timeout().toSeconds()
@@ -148,10 +148,15 @@ public final class McpConnector {
     /**
      * 连接结果。失败时携带可读原因，供报告直接展示。
      */
-    public record Result(boolean ok, ToolSurface surface, String serverName, String error, String phase) {
+    public record Result(boolean ok, ToolSurface surface, String serverName, String error, String phase,
+                         String protocolVersion) {
 
-        static Result success(ToolSurface surface) {
-            return new Result(true, surface, surface.serverName(), null, "COMPLETE");
+        public Result(boolean ok, ToolSurface surface, String serverName, String error, String phase) {
+            this(ok, surface, serverName, error, phase, "");
+        }
+
+        static Result success(ToolSurface surface, String protocolVersion) {
+            return new Result(true, surface, surface.serverName(), null, "COMPLETE", protocolVersion);
         }
 
         static Result failure(String serverName, String error) {

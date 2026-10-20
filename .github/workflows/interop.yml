@@ -1,0 +1,71 @@
+name: External interoperability and resource evidence
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      PYTHONIOENCODING: utf-8
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24.14.1'
+          cache: npm
+          cache-dependency-path: validation/interop/package-lock.json
+      - name: Install exact validation dependencies
+        run: python -m pip install --require-hashes -r validation/interop/requirements-lock.txt
+      - name: Install immutable external services
+        working-directory: validation/interop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build tested candidate on Linux
+        if: runner.os != 'Windows'
+        run: ./mvnw -B clean verify -Prelease-evidence
+      - name: Build tested candidate on Windows
+        if: runner.os == 'Windows'
+        run: ./mvnw.cmd -B clean verify -Prelease-evidence
+      - name: Verify distributable and report contracts
+        run: python scripts/verify_artifact.py
+      - name: Check public implementation wire evidence
+        run: python scripts/verify_interop.py
+      - name: Check independent approval processes
+        run: python scripts/verify_approval_processes.py
+      - name: Exercise JSON v3 candidate demo
+        run: python scripts/run_candidate_demo.py
+      - name: Prepare unlabeled development declarations
+        run: python scripts/prepare_manual_corpus.py
+      - name: Measure complete scans sequentially
+        run: python scripts/measure_scan.py --interop target/interop
+      - name: Retain versioned evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-evidence-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            target/mcp-sentinel.jar
+            target/bom.json
+            target/artifact-verification/build-evidence.json
+            target/interop/**
+            target/approval-processes/**
+            target/candidate-demo/**
+            target/manual-corpus/**
+            target/performance/**

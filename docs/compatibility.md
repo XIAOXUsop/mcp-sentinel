@@ -22,3 +22,5 @@
 在线注解在 SDK 带类型转换前校验并保留扩展；已知 hint 的字符串、数字和 null 直接拒绝。stdio 只清理本次启动并追踪到的进程树，先处理后代再处理父进程，清理不完整时扫描失败。刻意自行脱离父进程的程序不属于进程隔离保证。
 
 本地回环测试通过不等于生产服务互操作认证。正式发布需要远端 Linux 与 Windows 实跑；试点应记录服务版本、传输、角色、协商版本和失败样例。
+
+固定公开实现为 Filesystem 2.0.0、Git 2026.10.19、Playwright MCP 0.0.83，安装与启动见 [固定环境](../validation/interop/README.md)。两平台各执行 Filesystem/stdio、Git/stdio、Playwright/stdio、Playwright/HTTP，合计八个单元。原始声明与实际 JAR 六字段逐项对照，每组重复三次，验证在线/离线、合成变化阻断及清理。实际协商版本与参考客户端版本分别记录。每次结果以对应提交的 [互操作工作流](https://github.com/XIAOXUsop/mcp-sentinel/actions/workflows/interop.yml)及 summary.json 为准，不推导未测版本或客户现场兼容性。

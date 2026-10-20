@@ -1,0 +1,45 @@
+# Copy into the consuming repository after reviewing its policy and paths.
+# PR surface data is untrusted; the scanner, policy and approved baseline come from base.sha.
+name: Review MCP surface against trusted baseline
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build reviewed scanner from trusted source
+        working-directory: trusted
+        run: ./mvnw -B package -DskipTests
+      - name: Compare data using trusted policy and baseline
+        run: >-
+          java -jar trusted/target/mcp-sentinel.jar scan
+          --snapshot candidate/.sentinel/surface.json
+          --baseline trusted/.sentinel/approved.lock.json
+          --fail-on HIGH --fail-on-change BREAKING
+          --json report.json --sarif report.sarif
+      - name: Retain reports while preserving scan failure
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-surface-review
+          path: |
+            report.json
+            report.sarif
+          if-no-files-found: error

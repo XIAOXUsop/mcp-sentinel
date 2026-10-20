@@ -1,0 +1,59 @@
+{
+  "manifestVersion": 1,
+  "candidate": {
+    "commit": "917375e0c978db71c80774c42114c96e31d69dd7",
+    "jarSha256": "861984f9c91e9fbaf1f594dfd2f9a87f93c6a311b333cb302d4961207c35e3bc",
+    "sbomSha256": "409ab92823d74d983f763dcb8b726e99e32aa9027219bd43b9187af515fbb31f",
+    "ciRun": 39370305945
+  },
+  "protocolOffer": "2025-11-25",
+  "services": [
+    {
+      "id": "filesystem",
+      "package": "@modelcontextprotocol/server-filesystem",
+      "version": "2.0.0",
+      "source": {
+        "url": "git+https://github.com/modelcontextprotocol/servers.git",
+        "type": "git"
+      },
+      "integrity": "sha512-JT+bt9wrNIMqhGvOr49vEE9NpbkBxdjQxyLVqh3lYHsB2zGgbzePmDOGrm1glBT1DPR5YvkM6h/NXztWSRhywg==",
+      "transports": [
+        "stdio"
+      ]
+    },
+    {
+      "id": "playwright",
+      "package": "@playwright/mcp",
+      "version": "0.0.83",
+      "source": {
+        "url": "git+https://github.com/microsoft/playwright-mcp.git",
+        "type": "git"
+      },
+      "integrity": "sha512-oNcl+Ae2/IAjhfPeP46BfIkSakfmprY+aOtkv5MjrQ4lPav4/yNtPhL0iq8SlIM90oApWgBDUxaNKvktazUKOg==",
+      "transports": [
+        "stdio",
+        "streamable-http"
+      ]
+    },
+    {
+      "id": "git",
+      "package": "mcp-server-git",
+      "version": "2026.10.19",
+      "source": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+      "transports": [
+        "stdio"
+      ]
+    }
+  ],
+  "stableRelease": "BLOCKED",
+  "dependencyLocks": {
+    "package-lock.json": {
+      "path": "validation/interop/package-lock.json",
+      "sha256": "cbb4f37f2a03cf53a51eea85b1ef13356ab823cb66b4cb1fb95551a1d49b6835"
+    },
+    "requirements-lock.txt": {
+      "path": "validation/interop/requirements-lock.txt",
+      "sha256": "153f10eb202e57b85ddf5b0ef4e4e833971293a73f25897c1d47e0d9fab6a720"
+    }
+  }
+}

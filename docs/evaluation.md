@@ -1,5 +1,13 @@
 # 可复跑评测与性能基线
 
+完整扫描测量入口为 `python scripts/measure_scan.py --interop target/interop`，此前运行 verify_interop。每组默认 3 次系统缓存预热、20 次独立 JVM 实测，另有 30 次连续 stdio 和四类失败边界。P95 使用 nearest rank，正常/噪声、离线、stdio、HTTP 和公开实现分别保留原始样本。
+
+适配器调用被测 JAR 的 Main.run，在报告写出后读取 Linux 自身 VmHWM；Windows 读取原生 PeakWorkingSetSize。Linux 指标截至 CLI 完成，排除最终退出阶段。总耗时包含适配器和取证开销，cliBodySeconds 单列。进程树指标为 20 ms 同时 RSS 合计的最大观测值，可能漏短峰，独立 HTTP 服务不计入扫描器进程树。-Xms64m/-Xmx512m 只是测量参数。
+
+首次建立完整扫描基线，历史纯比较结果不能用于计算端到端退化率。共享 runner 或不同机器不直接使用 20% 门槛。开发机首轮存在其他验证活动，仅作观测；远端独立 runner 中顺序测量。后续性能比较先对齐环境与方法。
+
+人工评测说明见 [manual-labeling.md](validation/manual-labeling.md)。自动准备 20 个声明不等于人工标注或独立评测完成。
+
 运行 `python scripts/evaluate.py`，前提是构建完成且已安装 scripts/requirements-validation.txt。结果写入 target/evaluation。
 
 当前集合为 10 个生成模板家族、每族 30 个比较，共 300 组。覆盖 oneOf 重复、enum 内层顺序、嵌套属性、const 文本、必填变化、数值类型放宽，以及四类明确等价的写法。独立 Python JSON Schema 验证器先检查 Schema 和实例见证的前后有效性，再与 Java 实际指纹和阻断结果对照。等价家族的依据来自对应变换的规则，不把有限实例检验当成一般等价证明。
