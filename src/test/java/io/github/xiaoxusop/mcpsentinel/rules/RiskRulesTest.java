@@ -161,7 +161,7 @@ class RiskRulesTest {
     @Test
     void constrainedSchemaIsNotFlagged() {
         var findings = rulesOf(tool("search_by_status", "Searches by status", """
-                {"type":"object","properties":{"status":{"type":"string","enum":["OPEN","CLOSED"]}},"required":["status"]}"""));
+                {"type":"object","properties":{"status":{"type":"string","enum":["OPEN","CLOSED"]}},"required":["status"],"additionalProperties":false}"""));
 
         assertFalse(has(findings, "SCHEMA_UNCONSTRAINED_STRING"), findings.toString());
         assertFalse(has(findings, "SCHEMA_OPEN_OBJECT"), findings.toString());
@@ -232,11 +232,11 @@ class RiskRulesTest {
                 tool("get_account_balance",
                         "Read-only: returns the balance for a given account id.",
                         """
-                        {"type":"object","properties":{"accountId":{"type":"string","pattern":"^A-[0-9]{6}$"}},"required":["accountId"]}"""),
+                        {"type":"object","properties":{"accountId":{"type":"string","pattern":"^A-[0-9]{6}$"}},"required":["accountId"],"additionalProperties":false}"""),
                 tool("list_transactions",
                         "Read-only: lists transactions within an inclusive date range.",
                         """
-                        {"type":"object","properties":{"from":{"type":"string","format":"date"},"to":{"type":"string","format":"date"}},"required":["from","to"]}"""));
+                        {"type":"object","properties":{"from":{"type":"string","format":"date"},"to":{"type":"string","format":"date"}},"required":["from","to"],"additionalProperties":false}"""));
 
         assertEquals(List.of(), findings, findings.toString());
     }

@@ -23,7 +23,7 @@ public record ScanReport(String serverName,
                          List<ToolEvidence> tools,
                          List<ScanError> errors) {
 
-    public static final int REPORT_VERSION = 2;
+    public static final int REPORT_VERSION = 3;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public ScanReport {
@@ -99,6 +99,13 @@ public record ScanReport(String serverName,
         sb.append("  工具数      : ").append(toolCount).append('\n');
         sb.append("  工具面指纹  : ").append(surfaceFingerprint).append('\n');
         if (!baselineFingerprint.isBlank()) sb.append("  基线指纹    : ").append(baselineFingerprint).append('\n');
+        if (errors.stream().anyMatch(e -> !e.phase().equals("POLICY_CHECK"))) {
+            sb.append("  检查状态    : 失败；静态风险或漂移检查未执行／未完成，不能给出安全结论\n");
+            for (ScanError error : errors) sb.append("  错误        : ").append(Sanitizer.forReport(error.phase()))
+                    .append(" / ").append(Sanitizer.forReport(error.category())).append(" / ")
+                    .append(Sanitizer.forReport(error.message(), 240)).append('\n');
+            return sb.toString();
+        }
         sb.append("  风险        : HIGH=").append(countOf(Finding.Severity.HIGH))
           .append(" MEDIUM=").append(countOf(Finding.Severity.MEDIUM))
           .append(" LOW=").append(countOf(Finding.Severity.LOW)).append('\n');
@@ -139,6 +146,10 @@ public record ScanReport(String serverName,
         root.put("status", exitCode == 0 ? "PASS" : "FAIL");
         root.put("exitCode", exitCode);
         root.put("errorCategory", errorCategory == null ? "NONE" : errorCategory);
+        ObjectNode checks = root.putObject("checks");
+        checks.put("staticRisk", errors.stream().allMatch(e -> e.phase().equals("POLICY_CHECK") || e.phase().equals("BASELINE_WRITE"))
+                ? "COMPLETE" : "NOT_RUN");
+        checks.put("drift", diff != null ? "COMPLETE" : errors.isEmpty() ? "SKIPPED" : "NOT_RUN");
 
         var toolNodes = root.putArray("tools");
         for (ToolEvidence tool : tools) toolNodes.addObject().put("name", tool.name())

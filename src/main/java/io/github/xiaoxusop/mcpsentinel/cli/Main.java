@@ -460,7 +460,7 @@ public final class Main {
         try {
             target = ServerTarget.read(config, selectedServer);
         } catch (Exception e) {
-            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(e.getMessage(), 240));
+            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(safeConfigError(e), 240));
             reports.inputErrors.add(new ScanError(category(EXIT_USAGE), "CONFIG_READ", safeConfigError(e)));
             return EXIT_USAGE;
         }
@@ -532,7 +532,7 @@ public final class Main {
         try {
             target = ServerTarget.read(configFile, selectedServer);
         } catch (Exception e) {
-            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(e.getMessage(), 240));
+            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(safeConfigError(e), 240));
             return EXIT_USAGE;
         }
         String normalized = target.toNormalizedJson();
@@ -560,7 +560,7 @@ public final class Main {
         try {
             target = ServerTarget.read(configFile, selectedServer);
         } catch (Exception e) {
-            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(e.getMessage(), 240));
+            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(safeConfigError(e), 240));
             return EXIT_USAGE;
         }
         target = applyOverrides(target, timeout, connectTimeout, requestTimeout, maxTools);
@@ -602,7 +602,7 @@ public final class Main {
         try {
             targets = ServerTarget.readAll(configFile);
         } catch (Exception e) {
-            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(e.getMessage(), 240));
+            err.println("mcp-sentinel: 读取配置失败: " + Sanitizer.forReport(safeConfigError(e), 240));
             reports.inputErrors.add(new ScanError(category(EXIT_USAGE), "CONFIG_READ", safeConfigError(e)));
             return EXIT_USAGE;
         }
@@ -924,7 +924,8 @@ public final class Main {
         if (error instanceof com.fasterxml.jackson.core.JsonProcessingException) return "配置 JSON 格式无效";
         // A parser diagnostic may contain an input fragment; configuration values
         // have not yet been loaded, so do not echo that fragment into a report.
-        return "配置无法读取或字段不符合支持的格式（" + error.getClass().getSimpleName() + "）";
+        return "配置无法读取或字段不符合支持的格式；请检查 transport（stdio / streamable-http）、url、command 等字段（"
+                + error.getClass().getSimpleName() + "）";
     }
 
     private static String optionValue(String[] args, String key) {

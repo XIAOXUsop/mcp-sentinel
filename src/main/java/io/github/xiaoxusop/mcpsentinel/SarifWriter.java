@@ -47,7 +47,7 @@ public final class SarifWriter {
             Map.entry("DESCRIPTION_SCHEMA_MISMATCH", "描述自称只读，schema 却含写入语义参数"),
             Map.entry("TOOL_SHADOWING", "与既有工具名称相近且描述雷同"),
             Map.entry("DUPLICATE_TOOL_NAME", "工具名重复，以名字为键的存储会互相覆盖"),
-            Map.entry("UNSAFE_SERVER_NAME", "服务器名不符合规范字符集"),
+            Map.entry("UNSAFE_SERVER_NAME", "服务器名含控制字符或长度异常"),
             Map.entry("UNSAFE_TOOL_NAME", "工具名不符合 MCP 规范的字符集"),
             Map.entry("CROSS_TOOL_INSTRUCTION", "指令性措辞跨相邻工具拆分拼接"),
             Map.entry("CROSS_TOOL_DIRECTIVE", "工具描述点名操控本工具面内的其他工具"),

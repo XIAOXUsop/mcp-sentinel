@@ -4,7 +4,7 @@ MCP 工具声明面的 lockfile 与 CI 审查器。锁定工具定义，解释�
 
 Java 21 · MIT · stdio 与 Streamable HTTP。当前工作树是 **v0.6.0 候选实现**，正式发行以 [Releases](https://github.com/XIAOXUsop/mcp-sentinel/releases) 为准。[English](docs/README.en.md)
 
-2026-10-17 复审发现的离线输入校验、路径兜底和 JSON 契约问题已补充修复；当前验收及剩余门槛见 [执行记录](docs/execution-status.md)，原始反例保留在 [审计记录](docs/plan-compliance-audit.md)。
+2026-10-19 的全面检视另发现在线采集、分级和发布门禁等问题；当前修复与验收见 [执行记录](docs/execution-status.md)，原始证据保留在 [检视归档](docs/reviews/2026-10-19/README.md)。
 
 ## 五分钟离线演示
 
@@ -103,7 +103,7 @@ v0.6 使用基线格式 **3**、规范化版本 **2**。旧基线可能丢失了
 | `ENCODED_PAYLOAD` | MEDIUM | 编码内容解码后的风险线索 |
 | `CROSS_TOOL_DIRECTIVE` | MEDIUM | 描述指挥其他工具 |
 | `SCHEMA_NO_PARAMETERS` | MEDIUM | 无参数且未关闭额外属性 |
-| `SCHEMA_OPEN_OBJECT` | MEDIUM | 显式允许任意额外属性 |
+| `SCHEMA_OPEN_OBJECT` | MEDIUM | 缺省或显式允许任意额外属性 |
 | `DANGEROUS_PARAMETER` | MEDIUM | 参数名指向执行面 |
 | `TOOL_SHADOWING` | MEDIUM | 名称与描述疑似冒充 |
 | `SCHEMA_UNCONSTRAINED_STRING` | LOW | 缺少约束的字符串参数 |
@@ -112,7 +112,7 @@ v0.6 使用基线格式 **3**、规范化版本 **2**。旧基线可能丢失了
 
 ## 输出与退出状态
 
-`--out` 保存文本，`--json` 保存版本化结果，`--sarif` 保存 SARIF 2.1.0。JSON `reportVersion=2` 包含逐工具 tools 指纹、fingerprintsAvailable、errors 的类别／阶段／原因、采集与最终状态、目标、完整工具面指纹、findings 和 diff。批量 JSON 使用 mode 与 targets 数组，并聚合各目标错误。正式 Schema 及字段含义见 [报告约定](docs/report-format.md)。
+`--out` 保存文本，`--json` 保存版本化结果，`--sarif` 保存 SARIF 2.1.0。JSON `reportVersion=3` 包含逐工具 tools 指纹、fingerprintsAvailable、errors 的类别／阶段／原因、采集与最终状态、checks 的静态风险／漂移执行状态、目标、完整工具面指纹、findings 和 diff。批量 JSON 使用 mode 与 targets 数组，并聚合各目标错误。正式 Schema 及字段含义见 [报告约定](docs/report-format.md)。
 
 失败采集写 collectionStatus=FAILED，不伪造完整结果；部分目标完成时是 PARTIAL。采集完成后基线检查失败可同时是 COMPLETE 和 FAIL，已得到的工具指纹仍保留。JSON 记录最终输出状态。SARIF 的 invocation 标明是否完成扫描。终端显示转义控制字符，结构化文件保留经过 JSON 编码的值；错误诊断过滤已配置凭据。脱敏快照的 risk-only 报告明确标记指纹不可用。
 
@@ -128,7 +128,9 @@ v0.6 使用基线格式 **3**、规范化版本 **2**。旧基线可能丢失了
 
 默认风险阈值 HIGH，变化阈值 BREAKING。`--risk-only` 显式跳过漂移检查。多个目标同时失败时，优先报告基线、漂移、静态风险、连接、用法、输出错误；各目标详情仍保留。
 
-连接与请求默认各 20 秒；采集总时间预算为连接超时加两倍请求超时，默认 60 秒。最多 100 页，拒绝重复游标；默认最多 1000 个工具，可用 `--max-tools` 调整；单定义 1 MiB、累计定义 16 MiB、规范化深度 64。这些数量与大小检查发生在 SDK 解码后，尚不构成网络响应体解析前的内存边界。
+连接与请求默认各 20 秒；采集总时间预算为连接超时加两倍请求超时，默认 60 秒。最多 100 页，拒绝重复游标；默认最多 1000 个工具，可用 `--max-tools` 调整；单定义 1 MiB、累计定义 16 MiB、规范化深度 64。解析前限制原始单消息 16 MiB、累计 JSON 消息 32 MiB；文件读取上限 32 MiB，JSON 最多 100 万 token。stdio 超时清理本次进程树，HTTP 取消响应流；具体限制及 SSE framing 边界见 [兼容说明](docs/compatibility.md)。
+
+在线工具注解在带类型转换之前校验，错误 hint 类型直接拒绝，未知注解进入指纹与静态规则。旧在线证据中已被 SDK 丢弃的字段不能恢复；升级后出现的新路径必须重新审阅。稳定发行必须读取完整 Dependabot 告警，缺少权限或后续页读取失败均阻断，不再按旧 optional 开关降级。
 
 ## CI 与发行
 

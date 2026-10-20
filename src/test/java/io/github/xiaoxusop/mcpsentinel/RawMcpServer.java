@@ -28,7 +28,7 @@ import java.nio.file.Path;
  */
 public final class RawMcpServer {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonSupport.reader();
 
     private RawMcpServer() {
     }

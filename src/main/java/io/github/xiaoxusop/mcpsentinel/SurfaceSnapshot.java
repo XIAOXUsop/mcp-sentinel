@@ -72,7 +72,7 @@ public record SurfaceSnapshot(int version,
     public static SurfaceSnapshot read(Path file) throws IOException {
         JsonNode root;
         try {
-            root = STRICT_READER.readTree(Files.readString(file, StandardCharsets.UTF_8));
+            root = STRICT_READER.readTree(io.github.xiaoxusop.mcpsentinel.BoundedInput.read(file));
         } catch (Exception e) {
             throw new IOException("快照 JSON 解析失败：" + e.getMessage(), e);
         }

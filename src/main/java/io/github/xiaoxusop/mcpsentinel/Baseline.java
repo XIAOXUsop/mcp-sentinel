@@ -90,7 +90,7 @@ public record Baseline(int version,
     public static Baseline read(Path file) throws IOException {
         JsonNode root;
         try {
-            root = STRICT_READER.readTree(Files.readString(file, StandardCharsets.UTF_8));
+            root = STRICT_READER.readTree(io.github.xiaoxusop.mcpsentinel.BoundedInput.read(file));
         } catch (Exception e) {
             throw new IOException("基线 JSON 解析失败（可能含语法错误或重复 JSON 键）：" + e.getMessage(), e);
         }

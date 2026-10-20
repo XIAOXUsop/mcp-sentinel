@@ -128,6 +128,13 @@ public final class Sanitizer {
         return name != null && VALID_NAME.matcher(name).matches();
     }
 
+    /** Implementation names are display strings, not tool identifiers. */
+    public static boolean isSafeDisplayName(String name) {
+        if (name == null || name.isBlank() || name.length() > 256) return false;
+        for (char c : name.toCharArray()) if (isInvisible(c)) return false;
+        return true;
+    }
+
     /** 说明名字为什么不合规，供告警文案使用 */
     public static String whyInvalid(String name) {
         if (name == null || name.isEmpty()) {

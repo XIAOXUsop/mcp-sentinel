@@ -16,7 +16,8 @@ public final class JsonSupport {
                 .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build();
         mapper.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
-                .maxNestingDepth(128).maxStringLength(2 * 1024 * 1024).maxNumberLength(1000).build());
+                .maxNestingDepth(128).maxStringLength(2 * 1024 * 1024).maxNumberLength(1000)
+                .maxNameLength(64 * 1024).maxTokenCount(1_000_000).maxDocumentLength(BoundedInput.FILE_BYTES).build());
         return mapper;
     }
 }

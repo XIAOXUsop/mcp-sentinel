@@ -6,11 +6,6 @@ import io.github.xiaoxusop.mcpsentinel.ToolFingerprint;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
-import io.modelcontextprotocol.client.transport.ServerParameters;
-import io.modelcontextprotocol.client.transport.StdioClientTransport;
-import io.modelcontextprotocol.spec.McpClientTransport;
-import io.modelcontextprotocol.json.jackson2.JacksonMcpJsonMapper;
-import io.github.xiaoxusop.mcpsentinel.JsonSupport;
 import io.modelcontextprotocol.spec.McpSchema;
 
 import java.time.Duration;
@@ -18,6 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import io.github.xiaoxusop.mcpsentinel.Version;
+import io.github.xiaoxusop.mcpsentinel.BoundedInput;
 
 /**
  * 通过 MCP 协议连到服务器，把工具面拉下来。
@@ -46,29 +42,31 @@ public final class McpConnector {
      * 错误处理完全共用。规则、指纹、基线这些都不认识"传输"这个概念——
      * 换传输不该改变任何一条检测语义。
      */
-    private static McpClientTransport buildTransport(ServerTarget target) throws Exception {
+    private static EvidenceTransport buildTransport(ServerTarget target) throws Exception {
         if (target.transport() == ServerTarget.Transport.STREAMABLE_HTTP) {
             Map<String, String> headers = target.resolveHeaders(System::getenv);
-            return HttpClientStreamableHttpTransport.builder(target.url())
-                    .jsonMapper(new JacksonMcpJsonMapper(JsonSupport.reader()))
+            return new EvidenceTransport(HttpClientStreamableHttpTransport.builder(target.url())
+                    .jsonMapper(new BudgetJsonMapper())
+                    .maxResponseSize(BoundedInput.MESSAGE_BYTES)
                     .connectTimeout(target.timeout())
                     .httpRequestCustomizer((requestBuilder, method, uri, body, context) ->
                             headers.forEach(requestBuilder::header))
-                    .build();
+                    .build());
         }
 
-        ServerParameters.Builder parameters = ServerParameters.builder(target.command())
-                .args(target.args().toArray(new String[0]));
-        // env 是主流客户端配置的标准字段，很多 server 靠它拿 API key；
-        // 忽略它会让"可直接从现有配置复制"这个卖点在真实配置上直接失败
-        if (!target.env().isEmpty()) {
-            parameters.env(target.resolveEnvironment(System::getenv));
-        }
-        return new StdioClientTransport(parameters.build(), new JacksonMcpJsonMapper(JsonSupport.reader()));
+        target.resolveEnvironment(System::getenv);
+        return new EvidenceTransport(new OwnedStdioTransport(target, new BudgetJsonMapper()));
     }
 
     public static Result connect(ServerTarget target) {
-        McpClientTransport transport;
+        try { return connectOwned(target); }
+        catch (Exception e) {
+            return Result.failure(target.serverName(), "CLEANUP", target.redactDiagnostic("连接或清理失败：" + failureMessage(e)));
+        }
+    }
+
+    private static Result connectOwned(ServerTarget target) {
+        EvidenceTransport transport;
         try {
             transport = buildTransport(target);
         } catch (Exception e) {
@@ -102,26 +100,17 @@ public final class McpConnector {
                 if (++pages > 100) return Result.failure(target.serverName(), "工具列表分页超过安全上限 100 页");
                 McpSchema.ListToolsResult listed = client.listTools(cursor).block(remaining(deadline));
                 if (listed == null || listed.tools() == null) return Result.failure(target.serverName(), "工具列表返回空响应，无法判定工具面");
-                if ((long) tools.size() + listed.tools().size() > target.maxTools()) {
+                EvidenceTransport.Page page = transport.takePage(listed);
+                if ((long) tools.size() + page.tools().size() > target.maxTools()) {
                     return Result.failure(target.serverName(),
                             "服务器累计返回工具数超过安全上限 " + target.maxTools()
                                     + "（可通过 --max-tools 或配置中的 maxTools 调整）");
                 }
-                for (McpSchema.Tool tool : listed.tools()) {
-                    if (tool.name() == null || tool.name().isBlank() || tool.inputSchema() == null) {
-                        return Result.failure(target.serverName(), "工具定义缺少 name 或 inputSchema，不能静默跳过");
-                    }
-                    ToolDefinition def = new ToolDefinition(
-                            tool.name(),
-                            tool.title(),
-                            tool.description(),
-                            toJson(tool.inputSchema()),
-                            toJson(tool.outputSchema()),
-                            toJson(tool.annotations()));
+                for (ToolDefinition def : page.tools()) {
                     int bytes = def.toRawJson().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
                     if (bytes > ServerTarget.MAX_TOOL_DEFINITION_BYTES) {
                         return Result.failure(target.serverName(),
-                                "工具 '" + tool.name() + "' 定义大小 " + bytes
+                                "工具 '" + def.name() + "' 定义大小 " + bytes
                                         + " 字节超过安全上限 " + ServerTarget.MAX_TOOL_DEFINITION_BYTES);
                     }
                     totalBytes += bytes;
@@ -129,7 +118,7 @@ public final class McpConnector {
                     def.canonicalForm();
                     tools.add(def);
                 }
-                cursor = listed.nextCursor();
+                cursor = page.cursor();
                 if (cursor != null && (cursor.isBlank() || !cursors.add(cursor))) {
                     return Result.failure(target.serverName(), "工具分页 cursor 为空或重复；不能把未完成采集当成完整工具面");
                 }
@@ -141,7 +130,12 @@ public final class McpConnector {
                             + "s，请求超时=" + target.requestTimeout().toSeconds() + "s）："
                             + e.getClass().getSimpleName() + ": " + String.valueOf(e.getMessage())));
         } finally {
-            client.close();
+            try { client.closeGracefully().block(Duration.ofSeconds(2)); }
+            catch (Exception e) {
+                // Explicitly finish owned transport cleanup even when the SDK session cannot close.
+                transport.closeGracefully().block(Duration.ofSeconds(2));
+                throw new IllegalStateException("MCP 清理未在预算内完成", e);
+            }
         }
     }
 
@@ -149,12 +143,6 @@ public final class McpConnector {
         long nanos = deadline - System.nanoTime();
         if (nanos <= 0) throw new IllegalStateException("采集超过总时间预算");
         return Duration.ofNanos(nanos);
-    }
-
-    /** schema 在 SDK 里是 Map，转成 JsonNode 以便规范化与指纹计算 */
-    private static com.fasterxml.jackson.databind.JsonNode toJson(Object schema) {
-        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-        return schema == null ? mapper.createObjectNode() : mapper.valueToTree(schema);
     }
 
     /**

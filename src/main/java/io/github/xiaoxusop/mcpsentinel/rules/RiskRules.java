@@ -226,10 +226,9 @@ public final class RiskRules {
      */
     public static List<Finding> unsafeNames(ToolSurface surface) {
         List<Finding> findings = new ArrayList<>();
-        if (!Sanitizer.isValidName(surface.serverName())) {
+        if (!Sanitizer.isSafeDisplayName(surface.serverName())) {
             findings.add(new Finding("UNSAFE_SERVER_NAME", Finding.Severity.HIGH, "",
-                    "服务器名不符合规范字符集：它可以夹带换行与控制字符，"
-                            + "从而在扫描报告里伪造出行、注入 CI 工作流命令、或让 SARIF 失效",
+                    "服务器名为空、过长或包含控制字符：这些内容可能污染报告与下游显示",
                     Sanitizer.whyInvalid(surface.serverName())));
         }
         for (ToolDefinition tool : surface.sorted()) {
@@ -360,7 +359,7 @@ public final class RiskRules {
             return findings;
         }
 
-        if (schema.path("additionalProperties").asBoolean(false)) {
+        if (io.github.xiaoxusop.mcpsentinel.AdditionalProperties.isUnrestricted(schema.get("additionalProperties"))) {
             findings.add(new Finding("SCHEMA_OPEN_OBJECT", Finding.Severity.MEDIUM, tool.name(),
                     "schema 允许 additionalProperties：未声明的字段会被静默接受，"
                             + "使调用方看到的契约与实际可传内容不一致",

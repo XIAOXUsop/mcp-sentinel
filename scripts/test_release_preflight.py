@@ -75,19 +75,12 @@ class AlertsGate(unittest.TestCase):
         self.write(200, [_alert("medium")])
         self.assertFalse(self.run_gate(fail_on="medium"))
 
-    # ── `optional=True`：为「接口够不到」准备的降级开关 ──────────────────
-    #
-    # 背景（2026-09-20 实测）：Dependabot 告警接口**不接受 Actions 的 GITHUB_TOKEN**，
-    # 即便授了 `security-events: read` 也返回 403；匿名访问是 401。
-    # 没有 PAT secret 时，要么整条发布流程永久卡死，要么明确降级。
-    #
-    # 这一组用例钉住两件事：**降级只对"够不到"生效**，而且**降级要说出来**。
+    # Legacy optional input must never bypass the stable-publication evidence gate.
 
-    def test_optional_lets_403_through_but_says_so(self):
-        """降级放行可以，但必须打得足够响——这一轮确实没检查依赖告警。"""
+    def test_optional_no_longer_bypasses_403(self):
+        """Stable publication requires completed dependency evidence."""
         self.write(403, {"message": "Resource not accessible by integration"})
-        self.assertTrue(self.run_gate(optional=True))
-        self.assertIn("没有**做这项检查", self.text())
+        self.assertFalse(self.run_gate(optional=True))
         self.assertIn("PREFLIGHT_TOKEN", self.text())
 
     def test_optional_still_blocks_on_real_findings(self):
@@ -115,7 +108,7 @@ class AlertsGate(unittest.TestCase):
         """403 = 没开 Dependabot 或 token 缺权限。它和"没有告警"都表现为查不到东西。"""
         self.write(403, {"message": "Dependabot alerts are disabled for this repository."})
         self.assertFalse(self.run_gate())
-        self.assertIn("security-events", self.text())
+        self.assertIn("Dependabot alerts", self.text())
 
     def test_404_is_not_a_pass(self):
         self.write(404, {"message": "Not Found"})
@@ -146,7 +139,7 @@ class AlertsGate(unittest.TestCase):
     def test_full_page_is_called_out(self):
         # per_page=100：取满一页时如实说明"后面可能还有"，不假装看全了。
         self.write(200, [_alert("low") for _ in range(100)])
-        self.assertTrue(self.run_gate())
+        self.assertFalse(self.run_gate())
         self.assertIn("100", self.text())
 
 

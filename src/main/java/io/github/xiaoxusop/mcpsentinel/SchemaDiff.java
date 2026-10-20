@@ -156,7 +156,9 @@ final class SchemaDiff {
                                 required ? "/inputSchema/required" : "/inputSchema/properties/" + escapePointer(param)));
             }
             for (String param : new TreeSet<>(difference(beforeParams, afterParams))) {
-                changes.add(new Change("PARAM_REMOVED", name, occurrence, ChangeSeverity.BREAKING,
+                boolean mayExpand = AdditionalProperties.of(after.get("additionalProperties")) != AdditionalProperties.FALSE
+                        || after.has("patternProperties") || (beforeRequired.contains(param) && !afterRequired.contains(param));
+                changes.add(new Change("PARAM_REMOVED", name, occurrence, mayExpand ? ChangeSeverity.DANGEROUS : ChangeSeverity.BREAKING,
                         "参数 %s 被移除".formatted(param), shortHash(param)).at(
                                 afterProperties == null ? "/inputSchema/properties" : "/inputSchema/properties/" + escapePointer(param),
                                 beforeRequired.contains(param) ? "/inputSchema/required" : "/inputSchema/properties/" + escapePointer(param)));
@@ -252,77 +254,60 @@ final class SchemaDiff {
         if (Objects.equals(beforeNode, afterNode)) {
             return true;
         }
-        AdditionalPropsState before = AdditionalPropsState.of(beforeNode);
-        AdditionalPropsState after = AdditionalPropsState.of(afterNode);
+        AdditionalProperties before = AdditionalProperties.of(beforeNode);
+        AdditionalProperties after = AdditionalProperties.of(afterNode);
 
-        if (before == AdditionalPropsState.OTHER || after == AdditionalPropsState.OTHER) {
+        if (before == AdditionalProperties.OTHER || after == AdditionalProperties.OTHER) {
             return false;
         }
-        if (before == AdditionalPropsState.SCHEMA && after == AdditionalPropsState.SCHEMA) {
+        if (before == AdditionalProperties.SCHEMA && after == AdditionalProperties.SCHEMA) {
             // 两个不同的子 Schema 约束：无法简单归为打开或关闭，交由 UNGRADED_SCHEMA_CHANGE 保守阻断
             return false;
         }
-        if (before == AdditionalPropsState.FALSE
-                && (after == AdditionalPropsState.TRUE
-                    || after == AdditionalPropsState.OMITTED
-                    || after == AdditionalPropsState.SCHEMA)) {
-            String detail = after == AdditionalPropsState.SCHEMA
+        if (before == AdditionalProperties.FALSE
+                && (after == AdditionalProperties.TRUE
+                    || after == AdditionalProperties.OMITTED
+                    || after == AdditionalProperties.SCHEMA)) {
+            String detail = after == AdditionalProperties.SCHEMA
                     ? "additionalProperties 由关闭放宽为子 Schema 约束"
                     : "additionalProperties 由关闭变为打开：未声明的字段会被静默接受";
             changes.add(new Change("SCHEMA_OPENED", name, occurrence, ChangeSeverity.DANGEROUS,
                     detail, shortHash("open:" + afterNode)).at("/inputSchema/additionalProperties"));
             return true;
         }
-        if (before == AdditionalPropsState.OMITTED && after == AdditionalPropsState.TRUE) {
+        if (before == AdditionalProperties.OMITTED && after == AdditionalProperties.TRUE) {
             changes.add(new Change("SCHEMA_DEFAULT_EXPLICIT", name, occurrence, ChangeSeverity.INFO,
                     "additionalProperties 显式写为 true（缺省本就允许额外属性）", shortHash("explicit:true")).at("/inputSchema/additionalProperties"));
             return true;
         }
-        if (before == AdditionalPropsState.TRUE && after == AdditionalPropsState.OMITTED) {
+        if (before == AdditionalProperties.TRUE && after == AdditionalProperties.OMITTED) {
             changes.add(new Change("SCHEMA_DEFAULT_EXPLICIT", name, occurrence, ChangeSeverity.INFO,
                     "additionalProperties 恢复缺省允许", shortHash("omitted")).at("/inputSchema/additionalProperties"));
             return true;
         }
-        if ((before == AdditionalPropsState.TRUE || before == AdditionalPropsState.OMITTED)
-                && (after == AdditionalPropsState.FALSE || after == AdditionalPropsState.SCHEMA)) {
-            String detail = after == AdditionalPropsState.SCHEMA
+        if ((before == AdditionalProperties.TRUE || before == AdditionalProperties.OMITTED)
+                && (after == AdditionalProperties.FALSE || after == AdditionalProperties.SCHEMA)) {
+            String detail = after == AdditionalProperties.SCHEMA
                     ? "additionalProperties 由允许任意属性收窄为子 Schema 约束"
                     : "additionalProperties 由打开变为关闭";
             changes.add(new Change("SCHEMA_CLOSED", name, occurrence, ChangeSeverity.BREAKING,
                     detail, shortHash("closed:" + afterNode)).at("/inputSchema/additionalProperties"));
             return true;
         }
-        if (before == AdditionalPropsState.SCHEMA
-                && (after == AdditionalPropsState.TRUE || after == AdditionalPropsState.OMITTED)) {
+        if (before == AdditionalProperties.SCHEMA
+                && (after == AdditionalProperties.TRUE || after == AdditionalProperties.OMITTED)) {
             changes.add(new Change("SCHEMA_OPENED", name, occurrence, ChangeSeverity.DANGEROUS,
                     "additionalProperties 去掉了子 Schema 约束：未声明的字段会被静默接受",
                     shortHash("open:" + afterNode)).at("/inputSchema/additionalProperties"));
             return true;
         }
-        if (before == AdditionalPropsState.SCHEMA && after == AdditionalPropsState.FALSE) {
+        if (before == AdditionalProperties.SCHEMA && after == AdditionalProperties.FALSE) {
             changes.add(new Change("SCHEMA_CLOSED", name, occurrence, ChangeSeverity.BREAKING,
                     "additionalProperties 由子 Schema 约束变为关闭",
                     shortHash("closed")).at("/inputSchema/additionalProperties"));
             return true;
         }
         return false;
-    }
-
-    private enum AdditionalPropsState {
-        OMITTED, TRUE, FALSE, SCHEMA, OTHER;
-
-        static AdditionalPropsState of(JsonNode node) {
-            if (node == null || node.isMissingNode()) {
-                return OMITTED;
-            }
-            if (node.isBoolean()) {
-                return node.booleanValue() ? TRUE : FALSE;
-            }
-            if (node.isObject()) {
-                return SCHEMA;
-            }
-            return OTHER;
-        }
     }
 
     private static void compareParameter(String param, JsonNode before, JsonNode after,
@@ -352,7 +337,7 @@ final class SchemaDiff {
             if (!beforeTypes.equals(afterTypes) || !Objects.equals(bTypeNode, aTypeNode)) {
                 boolean widened = widens(beforeTypes, afterTypes);
                 boolean equivalent = coversAll(beforeTypes, afterTypes) && coversAll(afterTypes, beforeTypes);
-                changes.add(new Change(equivalent ? "PARAM_TYPE_EQUIVALENT" : widened ? "PARAM_TYPE_WIDENED" : "PARAM_TYPE_CHANGED",
+                changes.add(new Change(equivalent ? "PARAM_TYPE_EQUIVALENT" : widened && (afterTypes.isEmpty() || coversAll(afterTypes, beforeTypes)) ? "PARAM_TYPE_WIDENED" : "PARAM_TYPE_CHANGED",
                         name, occurrence, equivalent ? ChangeSeverity.INFO : widened ? ChangeSeverity.DANGEROUS : ChangeSeverity.BREAKING,
                         "参数 %s 的类型 %s → %s".formatted(param, beforeType, afterType),
                         shortHash(afterType)).at(paramPointer + "/type"));
@@ -388,7 +373,7 @@ final class SchemaDiff {
                             shortHash(afterEnum.toString())).at(paramPointer + "/enum"));
                     claimedFields.add("enum");
                 } else if (!afterEnum.equals(beforeEnum)) {
-                    changes.add(new Change("PARAM_ENUM_CHANGED", name, occurrence, ChangeSeverity.BREAKING,
+                    changes.add(new Change("PARAM_ENUM_CHANGED", name, occurrence, ChangeSeverity.DANGEROUS,
                             "参数 %s 的取值域改变：%s → %s".formatted(param, beforeEnum, afterEnum),
                             shortHash(afterEnum.toString())).at(paramPointer + "/enum"));
                     claimedFields.add("enum");
@@ -536,7 +521,8 @@ final class SchemaDiff {
         if (before.isEmpty()) {
             return false;
         }
-        return coversAll(after, before) && !coversAll(before, after);
+        // Any newly admitted type matters, including simultaneous narrowing.
+        return !coversAll(before, after);
     }
 
     private static boolean coversAll(Set<String> superset, Set<String> subset) {

@@ -146,7 +146,7 @@ public record ServerTarget(String serverName, Transport transport, String comman
     private static JsonNode parseConfigRoot(Path configFile) throws IOException {
         JsonNode root;
         try {
-            root = STRICT_READER.readTree(Files.readString(configFile, StandardCharsets.UTF_8));
+            root = STRICT_READER.readTree(io.github.xiaoxusop.mcpsentinel.BoundedInput.read(configFile));
         } catch (Exception e) {
             throw new IOException("解析配置文件失败：" + e.getMessage(), e);
         }

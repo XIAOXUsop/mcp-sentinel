@@ -68,6 +68,6 @@ public final class TestMcpServer {
     }
 
     private static Map<String, Object> schema(Map<String, Object> properties, List<String> required) {
-        return Map.of("type", "object", "properties", properties, "required", required);
+        return Map.of("type", "object", "properties", properties, "required", required, "additionalProperties", false);
     }
 }

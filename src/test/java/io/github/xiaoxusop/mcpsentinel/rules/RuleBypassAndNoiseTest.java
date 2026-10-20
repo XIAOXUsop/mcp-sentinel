@@ -45,7 +45,7 @@ class RuleBypassAndNoiseTest {
     }
 
     private static final String CONSTRAINED = """
-            {"type":"object","properties":{"text":{"type":"string","maxLength":200}},"required":["text"]}""";
+            {"type":"object","properties":{"text":{"type":"string","maxLength":200}},"required":["text"],"additionalProperties":false}""";
 
     // ---------- 绕过 ①：同形字 ----------
 
@@ -229,7 +229,7 @@ class RuleBypassAndNoiseTest {
                        "cursor":{"type":"string"},
                        "limit":{"type":"integer"},
                        "note":{"type":"string","maxLength":200}},
-                     "required":["q"]}"""));
+                     "required":["q"],"additionalProperties":false}"""));
         }
 
         List<Finding> findings = RiskRules.evaluate(ToolSurface.of("big", tools));
@@ -263,12 +263,12 @@ class RuleBypassAndNoiseTest {
     @Test
     void accessSurfaceParametersAreLowWhileExecutionSurfaceStayMedium() {
         var accessOnly = rulesOf(tool("read_file", "Reads a file.", """
-                {"type":"object","properties":{"path":{"type":"string","maxLength":4096}},"required":["path"]}"""));
+                {"type":"object","properties":{"path":{"type":"string","maxLength":4096}},"required":["path"],"additionalProperties":false}"""));
         assertEquals(0, countOf(accessOnly, Finding.Severity.MEDIUM), accessOnly.toString());
         assertTrue(has(accessOnly, "PARAMETER_REACHES_ACCESS_SURFACE"), accessOnly.toString());
 
         var execution = rulesOf(tool("run", "Runs a command.", """
-                {"type":"object","properties":{"command":{"type":"string","maxLength":200}},"required":["command"]}"""));
+                {"type":"object","properties":{"command":{"type":"string","maxLength":200}},"required":["command"],"additionalProperties":false}"""));
         assertEquals(1, countOf(execution, Finding.Severity.MEDIUM), execution.toString());
         assertTrue(has(execution, "DANGEROUS_PARAMETER"), execution.toString());
     }
