@@ -1,0 +1,15 @@
+{
+  "policyVersion": 1,
+  "repository": "XIAOXUsop/mcp-sentinel",
+  "stablePublicationAllowed": false,
+  "decisionDate": "2026-10-20",
+  "decisionBasis": "User chose to complete engineering and pushing while retaining the stable-release block pending real dependency alerts.",
+  "dependencyInventory": "NOT_VERIFIED",
+  "humanAcceptance": {
+    "N05": "DEFERRED_BY_USER",
+    "N06ExternalReplay": "DEFERRED_BY_USER",
+    "humanLabels": 0,
+    "externalReplays": 0
+  },
+  "liftingRule": "Requires a subsequent explicit user decision recorded in a reviewed policy change. Engineering success never changes this flag automatically."
+}
