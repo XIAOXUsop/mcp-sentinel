@@ -25,13 +25,17 @@ def consume(bundle, output, expected):
     require(shell, 'PowerShell 7 is needed by the Windows verification harness')
     java_home = Path(os.environ['JAVA_HOME'])
     jlink = java_home / 'bin' / ('jlink.exe' if os.name == 'nt' else 'jlink')
-    with tempfile.TemporaryDirectory(prefix='sentinel consumer 中文 ') as temporary:
+    # Windows jlink can encode non-ASCII command-line arguments through the
+    # legacy system code page. Prepare the harness runtime separately, using a
+    # relative output argument. The actual consumer still runs in a Unicode path.
+    with tempfile.TemporaryDirectory(prefix='sentinel-runtime-') as runtime_root, \
+            tempfile.TemporaryDirectory(prefix='sentinel consumer 中文 ') as temporary:
         work = Path(temporary)
-        runtime = work / 'runtime'
+        runtime = Path(runtime_root) / 'runtime'
         # Development tools belong only to the harness. The child environment has a runtime-only PATH.
         linked = subprocess.run([str(jlink), '--add-modules', 'java.se,jdk.unsupported,jdk.crypto.ec',
-                                 '--strip-debug', '--no-header-files', '--no-man-pages', '--output', str(runtime)],
-                                capture_output=True, timeout=180)
+                                 '--strip-debug', '--no-header-files', '--no-man-pages', '--output', 'runtime'],
+                                cwd=runtime_root, capture_output=True, timeout=180)
         require(linked.returncode == 0,
                 f'Runtime isolation failed ({linked.returncode}): '
                 f'{(linked.stdout + linked.stderr)[-2000:].decode("utf-8", errors="replace")}')
@@ -73,7 +77,8 @@ def consume(bundle, output, expected):
             calls.append({'step': name, 'exitCode': result.returncode, 'expectedExit': expected_exit,
                           'elapsedSeconds': time.monotonic() - start})
             require(result.returncode == expected_exit,
-                    f'Package step {name}: expected {expected_exit}, got {result.returncode}; stderr={result.stderr[-1200:]!r}')
+                    f'Package step {name}: expected {expected_exit}, got {result.returncode}; '
+                    f'stderr={result.stderr[-1200:]!r}; stdout={result.stdout[-1200:]!r}')
             return result.returncode
 
         codes = [step('init', 0), step('review', 4)]

@@ -220,4 +220,8 @@ if __name__ == '__main__':
         main()
     except (ValueError, KeyError, TypeError, OSError) as error:
         print(f'Candidate evidence rejected: {error}', file=sys.stderr)
+        import os
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            message = str(error).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+            print(f'::error title=Candidate evidence rejected::{message}', flush=True)
         sys.exit(1)
