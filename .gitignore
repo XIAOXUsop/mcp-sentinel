@@ -12,3 +12,4 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 validation/interop/node_modules/
+/evidence/

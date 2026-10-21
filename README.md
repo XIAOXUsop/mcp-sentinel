@@ -4,6 +4,8 @@ MCP 工具声明面的 lockfile 与 CI 审查器。锁定工具定义，解释�
 
 Java 21 · MIT · stdio 与 Streamable HTTP。当前工作树是 **v0.6.0 候选实现**，正式发行以 [Releases](https://github.com/XIAOXUsop/mcp-sentinel/releases) 为准。[English](docs/README.en.md)
 
+无需源码和开发工具的体验入口见 [离线候选包与验收](docs/candidate-delivery.md)。稳定发布仍受用户决定及真实依赖告警核实阻断；候选交付通过不会自动解除阻断。
+
 2026-10-19 的全面检视另发现在线采集、分级和发布门禁等问题；当前修复与验收见 [执行记录](docs/execution-status.md)，原始证据保留在 [检视归档](docs/reviews/2026-10-19/README.md)。
 
 ## 五分钟离线演示

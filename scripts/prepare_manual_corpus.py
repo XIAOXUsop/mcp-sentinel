@@ -27,7 +27,8 @@ def prepare(source,output):
           'sourceGroups':sorted({r['group'] for r in records}),'serviceSources':sorted({r['service'] for r in records}),
           'status':'AWAITING_INDEPENDENT_HUMAN_REVIEW',
           'limitations':['20 development declarations; not the 200-sample target','two service packages from one upstream repository; not ten-source coverage',
-                         'no accuracy or false-positive estimate','raw declarations stay local until redistribution review']})
+                         'no accuracy or false-positive estimate',
+                         'raw declarations retained locally and in Actions engineering artifacts; excluded from offline kit pending redistribution review']})
     save(output/'review-template.json',{'sampleId':'REPLACE_WITH_SAMPLE_ID','reviewerId':'','role':'',
         'independentOfRuleImplementation':None,'reviewedAt':'','label':'UNLABELED',
         'expectedFindings':[],'rationale':'','sawScannerOutputBeforeLabeling':None})

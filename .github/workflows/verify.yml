@@ -1,61 +1,14 @@
 name: Verify candidate artifacts
-
 on:
   workflow_call:
-
 permissions:
   contents: read
-
 jobs:
   verify:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-java@v5
-        with:
-          java-version: '21'
-          distribution: temurin
-          cache: maven
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install pinned validators
-        run: python -m pip install -r scripts/requirements-validation.txt
-      - name: Clean build and SBOM on Linux
-        if: runner.os != 'Windows'
-        run: ./mvnw -B clean verify -Prelease-evidence
-      - name: Clean build and SBOM on Windows
-        if: runner.os == 'Windows'
-        run: ./mvnw.cmd -B clean verify -Prelease-evidence
-      - name: Verify the actual JAR and SARIF schema
-        run: python scripts/verify_artifact.py
-      - name: Compare generated probes against independent witnesses
-        run: python scripts/evaluate.py
-      - name: Test release gates
-        run: python -m unittest discover -s scripts -p 'test_*.py' -v
-      - name: Self-test the SARIF validator
-        run: python scripts/check_sarif_schema.py --selftest
-      - name: Upload tested artifacts and evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: sentinel-${{ matrix.os }}
-          if-no-files-found: error
-          path: |
-            target/mcp-sentinel.jar
-            target/bom.json
-            target/artifact-verification/build-evidence.json
-      - name: Retain diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sentinel-diagnostics-${{ matrix.os }}
-          if-no-files-found: ignore
-          path: |
-            target/surefire-reports
-            target/artifact-verification/*.json
-            target/artifact-verification/*.sarif
-            target/evaluation/summary.json
+    uses: ./.github/workflows/verify-platform.yml
+    with:
+      os: ${{ matrix.os }}

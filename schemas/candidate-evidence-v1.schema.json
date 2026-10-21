@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candidate engineering and delivery evidence, independent of scan report v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["evidenceVersion", "identity", "sourceInputs", "engineeringStatus", "candidateStatus",
+    "stableReleaseStatus", "stablePublicationAllowed", "dependencyInventory", "humanAcceptance",
+    "artifact", "platformReceipts", "sarifReceiptSha256"],
+  "properties": {
+    "evidenceVersion": {"const": 1},
+    "identity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "commit", "workflowRef", "runId", "runAttempt", "event", "ref"],
+      "properties": {
+        "repository": {"const": "XIAOXUsop/mcp-sentinel"},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "workflowRef": {"type": "string", "minLength": 1},
+        "runId": {"type": "string", "pattern": "^[0-9]+$"},
+        "runAttempt": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+        "event": {"enum": ["push", "workflow_dispatch"]},
+        "ref": {"type": "string", "pattern": "^refs/(heads|tags)/"}
+      }
+    },
+    "sourceInputs": {"type": "object", "minProperties": 1, "additionalProperties": {"$ref": "#/$defs/digest"}},
+    "engineeringStatus": {"const": "PASSED"},
+    "candidateStatus": {"enum": ["NOT_YET_CONSUMED", "READY_FOR_HANDOFF"]},
+    "stableReleaseStatus": {"const": "BLOCKED"},
+    "stablePublicationAllowed": {"type": "boolean"},
+    "dependencyInventory": {"const": "NOT_VERIFIED_BY_CANDIDATE_TESTS"},
+    "humanAcceptance": {"type": "object"},
+    "artifact": {"type": "object", "additionalProperties": false, "required": ["jarSha256", "sbomSha256"],
+      "properties": {"jarSha256": {"$ref": "#/$defs/digest"}, "sbomSha256": {"$ref": "#/$defs/digest"}}},
+    "platformReceipts": {"type": "object", "additionalProperties": false, "required": ["linux", "win32"],
+      "properties": {"linux": {"$ref": "#/$defs/digest"}, "win32": {"$ref": "#/$defs/digest"}}},
+    "sarifReceiptSha256": {"$ref": "#/$defs/digest"},
+    "archive": {"type": "string", "pattern": "^[A-Za-z0-9._-]+\\.zip$"},
+    "archiveSha256": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [{"if": {"properties": {"candidateStatus": {"const": "READY_FOR_HANDOFF"}}},
+    "then": {"required": ["archive", "archiveSha256"]}}],
+  "$defs": {"digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+}

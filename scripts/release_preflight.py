@@ -2,7 +2,9 @@
 """发版前的两道闸：产物不该带着已知漏洞出门，也不该落后于默认分支。
 
     python3 scripts/release_preflight.py --alerts-json alerts.json \
-        --alerts-http alerts.http --tag v0.5.2 --base origin/master
+        --alerts-http alerts.http --alerts-receipt alerts-complete.json \
+        --repository XIAOXUsop/mcp-sentinel --candidate-evidence evidence \
+        --tag v0.5.2 --base origin/master
 
 退出码：0 = 放行 · 1 = 拒绝发布（有告警／落后者动了构建配置／**查不动**）
 
@@ -31,6 +33,7 @@ Dependabot 告警由 GitHub 计算；fetch_dependabot_alerts.py 完整读取分�
 """
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -52,7 +55,7 @@ BUILD_FILES = {
     "gradle.properties",
     "gradle/libs.versions.toml",
 }
-BUILD_PREFIXES = (".mvn/", "gradle/wrapper/", "src/", ".github/workflows/", "scripts/", "schemas/")
+BUILD_PREFIXES = (".mvn/", "gradle/wrapper/", "src/", ".github/workflows/", "scripts/", "schemas/", "validation/")
 
 _COMMIT_LINE = re.compile(r"^[0-9a-f]{7,40}\t")
 
@@ -90,7 +93,8 @@ def _git(*args, cwd=None):
     )
 
 
-def check_alerts(http_path, json_path, fail_on, emit, optional=False, receipt_path=None):
+def check_alerts(http_path, json_path, fail_on, emit, optional=False, receipt_path=None,
+                 repository=None, now=None, execution=None):
     """Require a readable, complete inventory; optional is a deprecated no-op."""
     try:
         with open(http_path, encoding="utf-8") as fh:
@@ -124,19 +128,31 @@ def check_alerts(http_path, json_path, fail_on, emit, optional=False, receipt_pa
         emit("[闸一] 告警响应不是数组——无法判定")
         return _unchecked(optional, emit, "响应不是数组")
 
-    if receipt_path:
-        try:
-            with open(receipt_path, encoding='utf-8') as fh: receipt = json.load(fh)
-            with open(json_path, 'rb') as fh: digest = hashlib.sha256(fh.read()).hexdigest()
-            if receipt.get('version') != 1 or receipt.get('complete') is not True or receipt.get('sha256') != digest \
-                    or receipt.get('alertCount') != len(alerts) or not isinstance(receipt.get('pages'), int) \
-                    or receipt['pages'] != len(alerts) // 100 + 1:
-                raise ValueError('inventory receipt does not match alerts')
-        except Exception:
-            emit('[闸一] 完整分页回执缺失或不匹配——拒绝发布')
-            return False
-    elif len(alerts) >= 100:
-        emit('[闸一] 至少 100 条告警但没有完整分页回执——拒绝发布')
+    if not receipt_path or not repository:
+        emit('[闸一] 所有清单（包括 0—99 条）均需完整回执及预期仓库——拒绝发布')
+        return False
+    try:
+        with open(receipt_path, encoding='utf-8') as fh: receipt = json.load(fh)
+        with open(json_path, 'rb') as fh: digest = hashlib.sha256(fh.read()).hexdigest()
+        if receipt.get('version') != 2 or receipt.get('collectorVersion') != 2 or receipt.get('complete') is not True \
+                or receipt.get('repository') != repository or receipt.get('sha256') != digest \
+                or type(receipt.get('alertCount')) is not int or receipt['alertCount'] != len(alerts) \
+                or type(receipt.get('pages')) is not int or receipt['pages'] != len(alerts) // 100 + 1 \
+                or receipt.get('query') != {'state':'open','perPage':100}:
+            raise ValueError('inventory receipt does not match alerts')
+        collected = datetime.fromisoformat(receipt['collectedAtUtc'].replace('Z', '+00:00'))
+        if collected.tzinfo is None:
+            raise ValueError('timestamp must have a timezone')
+        age = ((now or datetime.now(timezone.utc)) - collected).total_seconds()
+        if not -300 <= age <= 24 * 60 * 60:
+            raise ValueError('inventory receipt is stale or in the future')
+        if execution is not None and receipt.get('execution') != execution:
+            raise ValueError('inventory was collected by a different run')
+        numbers = [a.get('number') for a in alerts if isinstance(a, dict)]
+        if len(numbers) != len(alerts) or any(type(n) is not int for n in numbers) or len(set(numbers)) != len(numbers):
+            raise ValueError('invalid or repeated alert identity')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        emit('[闸一] 回执来源、时间、摘要或完整分页无效——拒绝发布')
         return False
 
     threshold = SEVERITIES.index(fail_on)
@@ -242,24 +258,36 @@ def main(argv=None):
     parser.add_argument("--alerts-json", default="alerts.json",
                         help="Dependabot 告警接口的响应体")
     parser.add_argument('--alerts-receipt', help='完整分页采集回执，绑定告警文件摘要')
+    parser.add_argument('--repository', required=True, help='Expected repository for this inventory')
+    parser.add_argument('--candidate-evidence', required=True, help='Complete candidate evidence directory')
     parser.add_argument("--fail-on", default="high", choices=SEVERITIES,
                         help="从哪一级开始阻断（默认 high）")
     parser.add_argument("--tag", required=True, help="要发布的 tag")
     parser.add_argument("--base", required=True, help="默认分支的 ref，如 origin/master")
     parser.add_argument("--skip-behind-check", action="store_true",
-                        help="只跑闸一（本地手测用；CI 里不许加这个）")
+                        help="已弃用；保留参数解析兼容，使用该参数会拒绝稳定发布。")
     parser.add_argument("--alerts-optional", action="store_true",
                         help="已弃用；保留参数解析兼容，但缺少检查证据仍拒绝发布。")
     args = parser.parse_args(argv)
 
     emit = Emitter()
+    try:
+        from candidate_common import identity, require_stable_allowed
+        from check_candidate_evidence import verify
+        from pathlib import Path
+        require_stable_allowed()
+        verify(Path(args.candidate_evidence), identity(), candidate=True)
+        if args.skip_behind_check:
+            raise ValueError('Stable preflight cannot skip source freshness')
+    except Exception as error:
+        emit(f'[发布策略/候选证据] 拒绝发布 ({type(error).__name__})')
+        emit.flush()
+        return 1
     ok_alerts = check_alerts(args.alerts_http, args.alerts_json, args.fail_on, emit,
-                             optional=args.alerts_optional, receipt_path=args.alerts_receipt)
-    if args.skip_behind_check:
-        emit("[闸二] 已按要求跳过")
-        ok_behind = True
-    else:
-        ok_behind = check_behind(args.tag, args.base, emit)
+                             optional=args.alerts_optional, receipt_path=args.alerts_receipt,
+                             repository=args.repository,
+                             execution={name:os.environ.get(name) for name in ['GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_SHA']})
+    ok_behind = check_behind(args.tag, args.base, emit)
 
     emit.flush()
 

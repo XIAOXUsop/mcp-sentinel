@@ -4,9 +4,15 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from candidate_common import POLICY, identity, require, require_stable_allowed
+from check_candidate_evidence import verify
 
 
-def package(directory: Path, tag: str, commit: str):
+def package(directory: Path, tag: str, commit: str, *, evidence_root: Path,
+            expected_identity: dict, policy_path: Path = POLICY):
+    require_stable_allowed(policy_path)
+    candidate = verify(evidence_root, expected_identity, candidate=True, policy_path=policy_path)
+    require(expected_identity['commit'] == commit, 'Release and candidate source differ')
     jar = directory / 'mcp-sentinel.jar'
     evidence_path = directory / 'artifact-verification/build-evidence.json'
     evidence = json.loads(evidence_path.read_text(encoding='utf-8'))
@@ -17,6 +23,8 @@ def package(directory: Path, tag: str, commit: str):
         raise ValueError('SBOM differs from the tested artifact inventory')
     if evidence['commit'] != commit:
         raise ValueError('Artifact was tested on a different commit')
+    require(candidate['artifact'] == {'jarSha256': evidence['jarSha256'], 'sbomSha256': evidence['sbomSha256']},
+            'Release artifact differs from complete candidate acceptance')
     if tag != 'v' + evidence['toolVersion']:
         raise ValueError('Tag and tested tool version differ')
     if bom.get('bomFormat') != 'CycloneDX' or bom.get('metadata', {}).get('component', {}).get('version') != evidence['toolVersion']:
@@ -38,5 +46,7 @@ if __name__ == '__main__':
     parser.add_argument('--directory', type=Path, default=Path('target'))
     parser.add_argument('--tag', required=True)
     parser.add_argument('--commit', required=True)
+    parser.add_argument('--candidate-evidence', type=Path, required=True)
     args = parser.parse_args()
-    print('\n'.join(package(args.directory, args.tag, args.commit)))
+    print('\n'.join(package(args.directory, args.tag, args.commit,
+                            evidence_root=args.candidate_evidence, expected_identity=identity())))

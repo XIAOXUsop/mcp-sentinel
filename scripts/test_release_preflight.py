@@ -13,12 +13,15 @@ import os
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
+import fetch_dependabot_alerts as fetcher
 
 import release_preflight as rp
 
 
 def _alert(severity, package="com.example:lib", ghsa="GHSA-0000-0000-0000"):
     return {
+        "number": 1,
         "security_advisory": {
             "severity": severity,
             "summary": "test advisory",
@@ -34,6 +37,7 @@ class AlertsGate(unittest.TestCase):
         self.http = os.path.join(self.dir, "alerts.http")
         self.json = os.path.join(self.dir, "alerts.json")
         self.lines = []
+        self.receipt = os.path.join(self.dir, "receipt.json")
 
     def emit(self, line=""):
         self.lines.append(line)
@@ -46,9 +50,13 @@ class AlertsGate(unittest.TestCase):
                 fh.write(body)
             else:
                 json.dump(body, fh)
+        if isinstance(body, list):
+            fetcher.write_inventory(body, len(body) // 100 + 1, 'owner/repo',
+                                    Path(self.json), Path(self.receipt))
 
     def run_gate(self, fail_on="high", optional=False):
-        return rp.check_alerts(self.http, self.json, fail_on, self.emit, optional=optional)
+        return rp.check_alerts(self.http, self.json, fail_on, self.emit, optional=optional,
+                               receipt_path=self.receipt, repository='owner/repo')
 
     def text(self):
         return "\n".join(self.lines)
@@ -140,7 +148,7 @@ class AlertsGate(unittest.TestCase):
         # per_page=100：取满一页时如实说明"后面可能还有"，不假装看全了。
         self.write(200, [_alert("low") for _ in range(100)])
         self.assertFalse(self.run_gate())
-        self.assertIn("100", self.text())
+        self.assertIn("拒绝", self.text())
 
 
 class BehindGate(unittest.TestCase):

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fetch every open-alert page; an inaccessible or incomplete inventory is a failure."""
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -36,10 +37,13 @@ def fetch(repository, token):
             return json.loads(data)
     return collect(repository, request_page)
 
-def write_inventory(alerts, pages, repository, output, receipt):
+def write_inventory(alerts, pages, repository, output, receipt, *, collected_at=None):
     data = (json.dumps(alerts, ensure_ascii=False, indent=2)+'\n').encode('utf-8')
     output.write_bytes(data)
-    receipt.write_text(json.dumps({'version':1,'complete':True,'repository':repository,'pages':pages,
+    receipt.write_text(json.dumps({'version':2,'complete':True,'repository':repository,'pages':pages,
+        'query':{'state':'open','perPage':100}, 'collectorVersion':2,
+        'collectedAtUtc': collected_at or datetime.now(timezone.utc).isoformat(),
+        'execution':{name:os.environ.get(name) for name in ['GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_SHA']},
         'alertCount':len(alerts),'sha256':hashlib.sha256(data).hexdigest()},indent=2)+'\n',encoding='utf-8')
 
 if __name__ == '__main__':

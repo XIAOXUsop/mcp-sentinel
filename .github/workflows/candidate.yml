@@ -1,0 +1,195 @@
+name: Complete candidate acceptance
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  linux:
+    uses: ./.github/workflows/verify-platform.yml
+    with:
+      os: ubuntu-latest
+      engineering: true
+  windows:
+    needs: linux
+    uses: ./.github/workflows/verify-platform.yml
+    with:
+      os: windows-latest
+      engineering: true
+      canonical-artifact: validation-evidence-ubuntu-latest
+  sarif:
+    needs: linux
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r scripts/requirements-validation.txt
+      - uses: actions/download-artifact@v5
+        with:
+          name: validation-evidence-ubuntu-latest
+          path: target/canonical
+      - name: Bind exact candidate to this run
+        run: python scripts/check_candidate_evidence.py adopt --root target/canonical
+      - name: Prepare synthetic change
+        run: |
+          mkdir -p target/sarif-ingestion/classes
+          javac -cp target/mcp-sentinel.jar -d target/sarif-ingestion/classes scripts/SarifIngestionProbe.java
+          java -cp target/sarif-ingestion/classes:target/mcp-sentinel.jar SarifIngestionProbe target/sarif-ingestion
+      - name: Observe expected scan failure
+        id: scan
+        continue-on-error: true
+        run: >-
+          java -jar target/mcp-sentinel.jar scan
+          --snapshot target/sarif-ingestion/changed.json
+          --baseline target/sarif-ingestion/baseline.json
+          --fail-on-change INFO
+          --json target/sarif-ingestion/report.json
+          --sarif target/sarif-ingestion/report.sarif
+      - name: Check expected drift
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r=json.loads(Path('target/sarif-ingestion/report.json').read_text())
+          assert r['exitCode']==4 and r['diff']['blockingChanges']==1 and r['findings']==[]
+          PY
+      - name: Import actual SARIF and await processing
+        id: upload
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: target/sarif-ingestion/report.sarif
+          category: mcp-sentinel/controlled-ingestion-probe
+          wait-for-processing: true
+      - name: Preserve independent outcomes
+        if: always()
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        run: |
+          PYTHONPATH=scripts python - <<'PY'
+          import os
+          from pathlib import Path
+          from candidate_common import identity, require, save, sha
+          p=Path('target/sarif-ingestion')
+          receipt={'identity':identity(),'jarSha256':sha('target/mcp-sentinel.jar'),
+                   'scanOutcome':os.environ['SCAN_OUTCOME'],'uploadOutcome':os.environ['UPLOAD_OUTCOME'],
+                   'files':{n:sha(p/n) for n in ['report.json','report.sarif']}}
+          save(p/'receipt.json',receipt)
+          require(receipt['scanOutcome']=='failure' and receipt['uploadOutcome']=='success','SARIF ingestion failed')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sarif-ingestion-evidence
+          retention-days: 90
+          path: target/sarif-ingestion
+  assemble:
+    needs: [linux, windows, sarif]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r scripts/requirements-validation.txt
+      - uses: actions/download-artifact@v5
+        with:
+          name: validation-evidence-ubuntu-latest
+          path: evidence/linux
+      - uses: actions/download-artifact@v5
+        with:
+          name: validation-evidence-windows-latest
+          path: evidence/win32
+      - uses: actions/download-artifact@v5
+        with:
+          name: sarif-ingestion-evidence
+          path: evidence/sarif
+      - name: Require complete engineering evidence
+        run: python scripts/check_candidate_evidence.py engineering --root evidence
+      - name: Assemble without rebuilding
+        run: python scripts/package_candidate.py --evidence evidence
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-engineering-and-bundle
+          retention-days: 90
+          if-no-files-found: error
+          path: evidence
+  consume:
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v5
+        with:
+          name: candidate-engineering-and-bundle
+          path: evidence
+      - name: Consume package outside source checkout with Java-only PATH
+        run: python scripts/verify_candidate_package.py --bundle evidence/bundle --output evidence/consumption
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidate-consumption-${{ matrix.os }}
+          retention-days: 90
+          path: evidence/consumption
+  finalize:
+    needs: consume
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r scripts/requirements-validation.txt
+      - uses: actions/download-artifact@v5
+        with:
+          name: candidate-engineering-and-bundle
+          path: evidence
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: candidate-consumption-*
+          merge-multiple: true
+          path: evidence/consumption
+      - name: Final candidate gate with publication still separately blocked
+        run: python scripts/check_candidate_evidence.py candidate --root evidence
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-delivery
+          retention-days: 90
+          if-no-files-found: error
+          path: evidence
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-offline-kit
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            evidence/bundle/*.zip
+            evidence/bundle/*.sha256
+            evidence/candidate.json
