@@ -202,6 +202,17 @@ def main():
         result = verify(args.root, expected, candidate=args.mode == 'candidate')
         save(args.output or args.root / (args.mode + '.json'), result)
         print(f"{args.mode}: {result['candidateStatus']}; stable release: BLOCKED")
+        if args.mode == 'candidate':
+            import os
+            if os.environ.get('GITHUB_ACTIONS') == 'true':
+                # Public check metadata contains only candidate identities/digests,
+                # never raw declarations, environment values or test logs.
+                summary = {key: result[key] for key in ('identity', 'candidateStatus', 'stableReleaseStatus',
+                                                        'artifact', 'archive', 'archiveSha256')}
+                summary['coverage'] = {platform: load(args.root / platform / 'platform-receipt.json')['coverage']
+                                       for platform in ('linux', 'win32')}
+                message = json.dumps(summary, ensure_ascii=True).replace('%', '%25')
+                print(f'::notice title=Candidate acceptance receipt::{message}', flush=True)
 
 
 if __name__ == '__main__':

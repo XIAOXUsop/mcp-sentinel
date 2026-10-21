@@ -29,9 +29,12 @@ def consume(bundle, output, expected):
         work = Path(temporary)
         runtime = work / 'runtime'
         # Development tools belong only to the harness. The child environment has a runtime-only PATH.
-        subprocess.run([str(jlink), '--add-modules', 'java.se,jdk.unsupported,jdk.crypto.ec',
-                        '--strip-debug', '--no-header-files', '--no-man-pages', '--output', str(runtime)],
-                       check=True, capture_output=True, timeout=180)
+        linked = subprocess.run([str(jlink), '--add-modules', 'java.se,jdk.unsupported,jdk.crypto.ec',
+                                 '--strip-debug', '--no-header-files', '--no-man-pages', '--output', str(runtime)],
+                                capture_output=True, timeout=180)
+        require(linked.returncode == 0,
+                f'Runtime isolation failed ({linked.returncode}): '
+                f'{(linked.stdout + linked.stderr)[-2000:].decode("utf-8", errors="replace")}')
         with zipfile.ZipFile(archive) as zipped:
             for name in zipped.namelist():
                 child(work, name)
