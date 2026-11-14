@@ -15,7 +15,7 @@ jsonschema-specifications==2025.9.1
 mcp==2.3.0
 mcp-server-git==2026.10.19
 mcp-types==2.3.0
-opentelemetry-api==1.45.1
+opentelemetry-api==1.45.2
 psutil==7.2.2
 pycparser==3.11
 pydantic==2.14.1
