@@ -4,7 +4,7 @@
   "private": true,
   "description": "Pinned external MCP implementations used only for interoperability validation",
   "dependencies": {
-    "@modelcontextprotocol/server-filesystem": "2.0.0",
+    "@modelcontextprotocol/server-filesystem": "2.3.0",
     "@playwright/mcp": "0.0.83"
   }
 }
